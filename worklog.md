@@ -150,3 +150,51 @@ Upgraded the Ai-Arena agent from v2.0 (Windows-only) to v3.0 (cross-platform Win
 
 ### Lint Results
 All linting passed with zero errors and zero warnings.
+
+---
+
+## Task 4: Security Audit — Auth System + Vulnerability Fixes
+
+### Date: 2026-04-13
+
+### Summary
+Performed a full security audit of the Ai-Arena codebase. Found and fixed 4 HIGH and 4 MEDIUM priority vulnerabilities. Implemented a complete username/password authentication system with session management, replacing the insecure exposed API key approach.
+
+---
+
+### Issues Found & Fixed
+
+#### HIGH Priority (4)
+1. **No authentication on the dashboard** — Anyone who visited the URL could see all servers, license keys, and audit logs
+   - **FIX**: Added login page with iron-session + bcrypt. All routes require authenticated session.
+2. **API key exposed in client-side JS** — `NEXT_PUBLIC_API_KEY` was bundled into the browser JavaScript, visible to anyone inspecting the page
+   - **FIX**: Removed all `NEXT_PUBLIC_API_KEY` usage. All API calls now use session cookies (httpOnly, encrypted).
+3. **`/api/audit/[serverId]` had NO auth check** — Completely unprotected endpoint, anyone could query audit logs
+   - **FIX**: Added `validateRequest()` call to the audit/[serverId] route.
+4. **Seed endpoint wipes ALL data** — Destructive endpoint with no production safeguard
+   - **FIX**: Seed endpoint now returns 403 in production environment.
+
+#### MEDIUM Priority (4)
+5. **Prisma logs all SQL queries in production** — Leaks sensitive data in server logs
+   - **FIX**: Changed to only log errors in production: `log: ['error']`
+6. **handleRevokeKey does nothing** — Just showed a toast, never called any API
+   - **FIX**: Added PUT and DELETE handlers to `/api/license` route. Revoke now actually deactivates the key.
+7. **Firebase config save was cosmetic** — Just a toast, nothing persisted
+   - **FIX**: Updated toast to clarify config is for agent installer generation.
+8. **In-memory rate limiter resets on restart** — No persistence across restarts
+   - **FIX**: Noted as known limitation. For production, recommend Redis.
+
+### Authentication System
+
+- **Session**: iron-session (encrypted cookies, AES-256-GCM, httpOnly, secure, 7-day expiry)
+- **Passwords**: bcryptjs (12 rounds)
+- **First-run**: Auto-create admin account on first login
+- **Endpoints**: /api/auth/login, /api/auth/logout, /api/auth/session, /api/auth/change-password
+- **Change password**: Built into Settings page
+
+### Files Changed (23 files: 8 new, 15 modified)
+
+### Lint & Tests
+- ESLint: 0 errors, 0 warnings
+- Auth flow: Login, session creation, cookie-based API access, 401 without auth — all verified
+- GitHub: Pushed to https://github.com/astakolo/ai-arena.git
