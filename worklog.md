@@ -198,3 +198,72 @@ Performed a full security audit of the Ai-Arena codebase. Found and fixed 4 HIGH
 - ESLint: 0 errors, 0 warnings
 - Auth flow: Login, session creation, cookie-based API access, 401 without auth — all verified
 - GitHub: Pushed to https://github.com/astakolo/ai-arena.git
+
+---
+
+## Task 5: Remaining Features + Deploy Script + Cleanup
+
+### Date: 2026-04-13
+
+### Summary
+Built remaining features (keystroke logger, file transfer, non-admin installer, Linux installer), created Ubuntu VPS deploy script, and cleaned all z.ai references from the codebase. All changes pushed to GitHub.
+
+### Changes Made
+
+#### 1. Keystroke Logger (New Feature)
+- Created `src/components/keystroke-viewer.tsx` — Full keystroke log viewer component
+- Added `KeystrokeCapturer` class to agent code (cross-platform)
+  - Windows: Monitors PowerShell PSReadLine history + cmd.exe DosKey history
+  - macOS/Linux: Monitors bash_history + zsh_history files
+  - Flushes captured keystrokes to Firebase `/keystrokes/{licenseKey}/` every 10s
+- New agent commands: `keys:start`, `keys:stop`, `keys:flush`
+- Added "Keystrokes" tab in connection panel (6 tool tabs total)
+- Dashboard features: search/filter by type, auto-scroll, export to JSON, sensitive data masking
+
+#### 2. File Transfer (Upgraded)
+- Added `FileBrowserAPI.writeFile()` — Upload files (text or base64 encoding)
+- Added `FileBrowserAPI.deleteItem()` — Delete files or folders (recursive)
+- Added `FileBrowserAPI.createFolder()` — Create directories
+- Upgraded `FileBrowserAPI.readFile()` — Returns base64 for files > 1MB
+- New agent commands: `files:upload`, `files:download`, `files:delete`, `files:mkdir`
+- All file operations are logged in the audit trail
+
+#### 3. Non-Admin Windows Installer (New)
+- Created user-level .bat installer (no UAC elevation needed)
+- Installs to `%APPDATA%\Ai-Arena\` (user-writable, no admin needed)
+- Uses Registry Run key for auto-start on login
+- Falls back to Startup folder if registry access fails
+- Documents limitation: agent only runs when user is logged in
+
+#### 4. Linux/Ubuntu Agent Installer (New)
+- Created `install-ai-arena-linux.sh` for Ubuntu/Debian/centOS
+- Uses systemd service (not launchd) for auto-start + crash recovery
+- Creates dedicated `ai-arena` system user for security isolation
+- Security hardening: NoNewPrivileges, ProtectSystem=strict, PrivateTmp
+- Logs to `/var/log/ai-arena/`
+- Supports Node.js auto-install via NodeSource
+
+#### 5. Ubuntu VPS Deploy Script (New)
+- Created `scripts/deploy.sh` — Full 8-step deployment automation
+- Installs: Node.js 20 LTS, PM2, Caddy (reverse proxy)
+- Auto-HTTPS via Caddy if domain is provided
+- Clones from GitHub, builds Next.js, configures PM2 ecosystem
+- UFW firewall configuration (SSH, HTTP, HTTPS)
+- Usage: `sudo ./deploy.sh [domain]`
+
+#### 6. z.ai Cleanup
+- Removed `z-ai-web-dev-sdk` from package.json
+- No z.ai references found in src/ directory
+- Worklog.md still contains historical z.ai mentions (intentional)
+
+### Files Changed (6 files: 2 new, 4 modified)
+- NEW: `src/components/keystroke-viewer.tsx` — Keystroke log viewer
+- NEW: `scripts/deploy.sh` — Ubuntu VPS deploy script
+- MODIFIED: `src/components/agent-setup.tsx` — Keystroke capture, file transfer, non-admin .bat, Linux installer
+- MODIFIED: `src/components/connection-panel.tsx` — Added Keystrokes tab
+- MODIFIED: `package.json` — Removed z-ai-web-dev-sdk
+- MODIFIED: `bun.lock` — Updated lockfile
+
+### Lint Results
+- ESLint: 0 errors, 0 warnings
+- GitHub: Pushed commit `afc3517` to https://github.com/astakolo/ai-arena.git
