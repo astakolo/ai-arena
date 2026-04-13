@@ -8,6 +8,7 @@ import {
   Settings,
   LayoutDashboard,
   Plug,
+  Eye,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAiArenaStore } from '@/lib/store'
@@ -16,6 +17,7 @@ const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'connect', label: 'Connect', icon: Plug },
   { id: 'keys', label: 'License Keys', icon: KeyRound },
+  { id: 'audit', label: 'Audit Trail', icon: Eye },
   { id: 'agent', label: 'Agent Setup', icon: Server },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]

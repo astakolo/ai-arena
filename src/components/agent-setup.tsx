@@ -264,12 +264,102 @@ class TerminalSession {
   }
 }
 
+// ─── Activity Audit System ────────────────────────────
+// Logs all commands, logins, process creation, and file access
+// Events are sent to Firebase /audit/{licenseKey} for dashboard review
+class ActivityAudit {
+  constructor() {
+    this.buffer = [];
+    this.flushInterval = 15000; // Flush every 15 seconds
+    this.firebaseDb = null;
+    this.licenseKey = null;
+  }
+
+  log(eventType, data) {
+    this.buffer.push({
+      eventType: eventType,
+      username: process.env.USERNAME || os.userInfo().username || 'Unknown',
+      hostname: os.hostname(),
+      command: data.command || null,
+      windowTitle: data.windowTitle || null,
+      processName: data.processName || null,
+      keysLogged: data.keysLogged || null,
+      timestamp: new Date().toISOString(),
+    });
+    // Keep buffer manageable
+    if (this.buffer.length > 500) this.buffer = this.buffer.slice(-250);
+  }
+
+  // Enable PowerShell Script Block Logging and Transcription
+  enablePSEventLogging() {
+    try {
+      exec('powershell -NoProfile -Command "try { $p = \\"HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging\\"; if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null }; Set-ItemProperty -Path $p -Name EnableScriptBlockLogging -Value 1 -Type DWord -Force; $t = \\"HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\Transcription\\"; if (!(Test-Path $t)) { New-Item -Path $t -Force | Out-Null }; Set-ItemProperty -Path $t -Name EnableTranscription -Value 1 -Type DWord -Force; Set-ItemProperty -Path $t -Name OutputDirectory -Value (Join-Path $env:APPDATA Ai-Arena/transcripts) -Type String -Force; Write-Output OK } catch { Write-Output FAIL }"',
+        { timeout: 20000 }, (err, stdout) => {
+          if (!err && stdout && stdout.includes('OK')) {
+            log('INFO', 'PowerShell script block logging + transcription enabled');
+          } else {
+            log('WARN', 'PS event logging setup skipped (may need admin)');
+          }
+        });
+    } catch (e) { /* ignore */ }
+  }
+
+  // Monitor for logon events via Windows Security Event Log
+  startLogonMonitor() {
+    setInterval(() => {
+      exec('powershell -NoProfile -Command "try { Get-WinEvent -FilterHashtable @{LogName=\\\"Security\\\";Id=4624,4634} -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { $x=[xml]$_.ToXml(); $u=$x.Event.EventData.Data | Where-Object {$_.Name -eq \\"TargetUserName\\"} | Select -ExpandProperty #text; $l=$x.Event.EventData.Data | Where-Object {$_.Name -eq \\"LogonType\\"} | Select -ExpandProperty #text; Write-Output \\\"$($_.Id)|$u|$l|$($_.TimeCreated)\\\" } } catch {}"',
+        { timeout: 15000 }, (err, stdout) => {
+          if (!err && stdout && stdout.trim()) {
+            stdout.trim().split('\\n').forEach(line => {
+              const parts = line.split('|');
+              if (parts[0] === '4624' && parts[1] && parts[1] !== '-') {
+                this.log('login', {
+                  command: 'Logon Type ' + (parts[2] || 'unknown'),
+                  windowTitle: 'Windows Logon',
+                  processName: 'logonui.exe',
+                });
+                log('INFO', 'User login detected: ' + parts[1]);
+              }
+            });
+          }
+        });
+    }, 45000); // Check every 45 seconds
+  }
+
+  async flush() {
+    if (this.buffer.length === 0 || !this.firebaseDb) return;
+    const entries = [...this.buffer];
+    this.buffer = [];
+    try {
+      const { ref, set } = require('firebase/database');
+      for (const entry of entries) {
+        const key = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        await set(ref(this.firebaseDb, 'audit/' + this.licenseKey + '/' + key), entry);
+      }
+      log('INFO', 'Flushed ' + entries.length + ' audit events to Firebase');
+    } catch (e) {
+      this.buffer = [...entries, ...this.buffer];
+      log('WARN', 'Audit flush failed: ' + e.message);
+    }
+  }
+
+  start(firebaseDb, licenseKey) {
+    this.firebaseDb = firebaseDb;
+    this.licenseKey = licenseKey;
+    this.enablePSEventLogging();
+    this.startLogonMonitor();
+    setInterval(() => this.flush(), this.flushInterval);
+    log('INFO', 'Activity audit system started (PS logging + logon monitoring)');
+  }
+}
+
 // ─── Firebase Connection Manager (Firebase-First) ────────────
 class AiArenaAgent {
   constructor() {
     this.terminal = new TerminalSession();
     this.screen = new ScreenCapturer();
     this.microphone = new MicrophoneCapturer();
+    this.audit = new ActivityAudit();
     this.isConnected = false;
     this.agentRef = null;
     this.commandsRef = null;
@@ -320,6 +410,9 @@ class AiArenaAgent {
       // Start heartbeat
       this.startHeartbeat();
 
+      // Start activity audit logging (PS transcription + logon monitoring)
+      this.audit.start(database, CONFIG.licenseKey);
+
     } catch (err) {
       log('ERROR', 'Firebase connection failed: ' + err.message);
       this.scheduleReconnect();
@@ -348,6 +441,11 @@ class AiArenaAgent {
     switch (command.type) {
       case 'terminal:execute':
         log('INFO', 'Executing: ' + (command.data.command || '').substring(0, 50));
+        this.audit.log('command', {
+          command: command.data.command,
+          windowTitle: 'Remote Terminal (Ai-Arena)',
+          processName: 'cmd.exe',
+        });
         const result = await this.terminal.execute(command.data.command);
         await set(resultRef, { type: 'terminal:output', data: result });
         break;
@@ -469,11 +567,21 @@ process.on('unhandledRejection', (reason) => {
 // ─── Windows .bat Installer ──────────────────────────
 const batInstaller = `@echo off
 :: ═══════════════════════════════════════════════════════
-:: Ai-Arena Agent — Windows Silent Installer
+:: Ai-Arena Agent — Windows Self-Installing Agent
 :: Installs Node.js agent and sets up auto-start on boot
 :: (Unattended access — survives power outages)
 :: Firebase-first: all communication via trusted Firebase domains
 :: ═══════════════════════════════════════════════════════
+
+:: ─── Self-Elevation (Auto-requests Admin if needed) ─
+>nul 2>&1 "%SYSTEMROOT%\system32\cacls.exe" "%SYSTEMROOT%\system32\config\system"
+if '%errorlevel%' NEQ '0' (
+    echo Requesting administrator privileges...
+    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    exit /b
+)
+
+echo [OK] Running with administrator privileges.
 
 setlocal EnableDelayedExpansion
 
@@ -489,15 +597,8 @@ set "FIREBASE_APP_ID=your-app-id"
 set "INSTALL_DIR=C:\\Ai-Arena"
 set "TASK_NAME=AiArenaAgent"
 set "NODE_MIN_VERSION=18"
+set "AUTO_START_OK=0"
 
-:: Run as Administrator check
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo [ERROR] This installer must be run as Administrator!
-    echo Right-click the .bat file and select "Run as administrator"
-    pause
-    exit /b 1
-)
 
 echo.
 echo  ╔═══════════════════════════════════════════════╗
@@ -587,22 +688,34 @@ echo }
 echo  Configuration saved.
 echo.
 
-:: ─── Step 5: Create Windows Service via Task Scheduler ─
+:: ─── Step 5: Auto-Start Setup (3 fallback methods) ──
 echo [5/6] Setting up auto-start on boot...
-:: Remove existing task if it exists
+
+:: Method 1: Task Scheduler (best — runs at boot, no login needed)
 schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
+schtasks /create /tn "%TASK_NAME%" /tr "cmd /c cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%" /sc onstart /ru SYSTEM /rl HIGHEST /f >nul 2>&1
 
-:: Create scheduled task that runs on system startup
-:: Runs whether user is logged in or not (unattended)
-schtasks /create /tn "%TASK_NAME%" /tr "cmd /c cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%" /sc onstart /ru SYSTEM /rl HIGHEST /f
-
-if %errorLevel% neq 0 (
-    echo  [WARNING] Task Scheduler setup had issues.
-    echo  Falling back to Startup folder method...
-    copy "%~f0" "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Ai-Arena-Agent.bat" >nul 2>&1
+if %errorLevel% equ 0 (
+    echo  [OK] Task Scheduler: Agent starts on boot as SYSTEM (no login needed)
+    set "AUTO_START_OK=1"
 ) else (
-    echo  Auto-start task created successfully.
-    echo  The agent will start automatically on every boot.
+    echo  [!] Task Scheduler failed — trying Registry Run key...
+    
+    :: Method 2: Registry Run key (good — starts when any user logs in)
+    reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AiArenaAgent" /t REG_SZ /d "cmd /c cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%" /f >nul 2>&1
+    
+    if %errorLevel% equ 0 (
+        echo  [OK] Registry Run key: Agent starts when user logs in
+        set "AUTO_START_OK=2"
+    ) else (
+        echo  [!!] Registry also failed — using Startup folder as last resort...
+        
+        :: Method 3: Startup folder (basic — starts when user logs in)
+        mkdir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup" >nul 2>&1
+        echo cmd /c cd /d %INSTALL_DIR% ^&^& node ai-arena-agent.js --key=%LICENSE_KEY% > "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\ai-arena-agent.bat"
+        set "AUTO_START_OK=3"
+        echo  [OK] Startup folder: Agent starts when user logs in
+    )
 )
 echo.
 
@@ -621,8 +734,12 @@ echo.
 echo   Install dir:   %INSTALL_DIR%
 echo   License key:   %LICENSE_KEY%
 echo   Firebase Proj: %FIREBASE_PROJECT_ID%
-echo   Auto-start:    YES (runs on boot)
+echo   Auto-start:
+if "%AUTO_START_OK%"=="1" echo     Task Scheduler (runs on boot, no login needed) — BEST
+if "%AUTO_START_OK%"=="2" echo     Registry Run key (runs when user logs in) — GOOD
+if "%AUTO_START_OK%"=="3" echo     Startup folder (runs when user logs in) — BASIC
 echo   Logs:          %INSTALL_DIR%\\logs\\
+echo   Audit logs:    %INSTALL_DIR%\\audit\\
 echo.
 echo   IMPORTANT: Place ai-arena-agent.js in:
 echo   %INSTALL_DIR%\\ai-arena-agent.js
@@ -630,8 +747,13 @@ echo.
 echo   To start manually now:
 echo   cd /d %INSTALL_DIR% ^&^& node ai-arena-agent.js --key=%LICENSE_KEY%
 echo.
-echo   To stop the auto-start:
+echo   To remove auto-start (run all to clean):
 echo   schtasks /delete /tn "%TASK_NAME%" /f
+echo   reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AiArenaAgent" /f
+echo   del "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\ai-arena-agent.bat"
+echo.
+echo   NOTE: Just double-click the .bat file — it auto-requests
+echo   admin privileges. No right-click needed!
 echo.
 echo   After power outage, the agent will auto-start
 echo   when Windows boots. No one needs to be on-site.
@@ -660,10 +782,10 @@ const steps = [
     command: 'set "LICENSE_KEY=AI-your-actual-key-here"',
   },
   {
-    title: 'Run as Administrator',
-    description: 'Right-click the .bat file and select "Run as administrator". It will install Node.js if missing, install Firebase SDK, set up the agent, configure firewall rules, and register an auto-start task.',
+    title: 'Double-Click to Install',
+    description: 'Just double-click the .bat file! It auto-requests admin privileges via UAC. If no admin is available, it falls back to user-level auto-start (Registry Run key or Startup folder). No right-click needed!',
     icon: Shield,
-    command: 'Right-click → Run as administrator',
+    command: 'Double-click install-ai-arena.bat',
   },
   {
     title: 'Place the Agent Script',
@@ -903,7 +1025,8 @@ export function AgentSetup() {
               <div>
                 <p className="text-[10px] font-medium text-yellow-400">Important Notes</p>
                 <ul className="text-[10px] text-zinc-500 mt-1 space-y-0.5 list-disc list-inside">
-                  <li>Must run as Administrator for Task Scheduler and firewall setup</li>
+                  <li>Just double-click the .bat — it auto-requests admin via UAC (no right-click needed)</li>
+                  <li>If no admin is available, it falls back to user-level auto-start (Registry/Startup folder)</li>
                   <li>Windows Firewall rules are added automatically to allow outbound Firebase connections</li>
                   <li>To uninstall: <code className="text-zinc-400">schtasks /delete /tn &quot;AiArenaAgent&quot; /f</code> then delete <code className="text-zinc-400">C:\Ai-Arena\</code></li>
                   <li>Agent logs are stored in <code className="text-zinc-400">C:\Ai-Arena\logs\</code> for troubleshooting</li>

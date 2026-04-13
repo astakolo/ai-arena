@@ -49,3 +49,15 @@ model ConnectionLog {
   details   String?
   createdAt DateTime @default(now())
 }
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  serverId    String
+  eventType   String
+  username    String   @default("Unknown")
+  command     String?
+  windowTitle String?
+  processName String?
+  keysLogged  String?
+  timestamp   DateTime @default(now())
+}

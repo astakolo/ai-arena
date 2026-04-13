@@ -8,6 +8,7 @@ import { StatsOverview } from '@/components/stats-overview'
 import { ConnectionPanel } from '@/components/connection-panel'
 import { LicenseManager } from '@/components/license-manager'
 import { AgentSetup } from '@/components/agent-setup'
+import { AuditDashboard } from '@/components/audit-dashboard'
 import {
   Plus,
   Search,
@@ -478,6 +479,7 @@ export default function Home() {
                   {activeTab === 'dashboard' && `${servers.length} servers registered`}
                   {activeTab === 'connect' && 'Remote desktop & terminal access'}
                   {activeTab === 'keys' && `${licenseKeys.length} license keys`}
+                  {activeTab === 'audit' && 'Security audit & activity monitoring'}
                   {activeTab === 'agent' && 'Deploy agents to your servers'}
                   {activeTab === 'settings' && 'Configure Ai-Arena'}
                 </p>
@@ -595,6 +597,9 @@ export default function Home() {
               isLoading={isLoading}
             />
           )}
+
+          {/* Audit Tab */}
+          {activeTab === 'audit' && <AuditDashboard />}
 
           {/* Agent Setup Tab */}
           {activeTab === 'agent' && <AgentSetup />}
