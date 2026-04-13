@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { updateServerSchema } from '@/lib/validators'
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
   try {
     const { id } = await params
     const server = await db.server.findUnique({
@@ -21,7 +26,7 @@ export async function GET(
       return NextResponse.json({ error: 'Server not found' }, { status: 404 })
     }
     return NextResponse.json(server)
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch server' }, { status: 500 })
   }
 }
@@ -30,41 +35,52 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
   try {
     const { id } = await params
     const body = await request.json()
-    const { name, hostname, ip, port, os, cpu, ram, status } = body
+    const parsed = updateServerSchema.safeParse(body)
+
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Validation failed', details: parsed.error.flatten().fieldErrors },
+        { status: 400 }
+      )
+    }
 
     const server = await db.server.update({
       where: { id },
-      data: {
-        ...(name && { name }),
-        ...(hostname && { hostname }),
-        ...(ip && { ip }),
-        ...(port !== undefined && { port }),
-        ...(os !== undefined && { os }),
-        ...(cpu !== undefined && { cpu }),
-        ...(ram !== undefined && { ram }),
-        ...(status && { status }),
-      },
+      data: parsed.data,
     })
     return NextResponse.json(server)
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to update server' }, { status: 500 })
   }
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
   try {
     const { id } = await params
     await db.connectionLog.deleteMany({ where: { serverId: id } })
     await db.licenseKey.deleteMany({ where: { serverId: id } })
+    await db.auditLog.deleteMany({ where: { serverId: id } })
     await db.server.delete({ where: { id } })
     return NextResponse.json({ success: true })
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to delete server' }, { status: 500 })
   }
 }

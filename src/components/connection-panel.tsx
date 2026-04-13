@@ -58,6 +58,8 @@ export function ConnectionPanel() {
     }
   }
 
+  const apiHeaders = { 'X-API-Key': process.env.NEXT_PUBLIC_API_KEY || '' }
+
   const handleVerifyAndConnect = async () => {
     if (!selectedServer) {
       toast.error('Please select a server first')
@@ -74,7 +76,7 @@ export function ConnectionPanel() {
     try {
       const res = await fetch('/api/license/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiHeaders },
         body: JSON.stringify({ key: licenseInput.trim() }),
       })
 
@@ -86,6 +88,7 @@ export function ConnectionPanel() {
         // Initiate connection
         const connectRes = await fetch(`/api/servers/${selectedServer.id}/connect`, {
           method: 'POST',
+          headers: apiHeaders,
         })
         const connectData = await connectRes.json()
 
@@ -109,7 +112,7 @@ export function ConnectionPanel() {
     try {
       await fetch(`/api/servers/${selectedServer.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiHeaders },
         body: JSON.stringify({ status: 'online' }),
       })
     } catch {

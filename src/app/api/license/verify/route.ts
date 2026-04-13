@@ -1,14 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { verifyLicenseSchema } from '@/lib/validators'
 
 export async function POST(request: NextRequest) {
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
   try {
     const body = await request.json()
-    const { key } = body
+    const parsed = verifyLicenseSchema.safeParse(body)
 
-    if (!key) {
-      return NextResponse.json({ error: 'License key is required' }, { status: 400 })
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Validation failed', details: parsed.error.flatten().fieldErrors },
+        { status: 400 }
+      )
     }
+
+    const { key } = parsed.data
 
     const licenseKey = await db.licenseKey.findUnique({
       where: { key },
@@ -30,7 +43,7 @@ export async function POST(request: NextRequest) {
       isActive: licenseKey.isActive,
       createdAt: licenseKey.createdAt,
     })
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to verify license key' }, { status: 500 })
   }
 }

@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
   try {
     const { id } = await params
     const server = await db.server.findUnique({ where: { id } })
@@ -35,7 +42,7 @@ export async function POST(
       },
       message: 'Connection initiated. Waiting for agent response...',
     })
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to connect' }, { status: 500 })
   }
 }

@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { createServerSchema } from '@/lib/validators'
 import { v4 as uuidv4 } from 'uuid'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Auth check
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
+  // Rate limit
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
   try {
     const servers = await db.server.findMany({
       orderBy: { createdAt: 'desc' },
@@ -14,20 +24,30 @@ export async function GET() {
       },
     })
     return NextResponse.json(servers)
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch servers' }, { status: 500 })
   }
 }
 
 export async function POST(request: NextRequest) {
+  const auth = validateApiKey(request)
+  if (!auth.valid) return auth.error!
+
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
   try {
     const body = await request.json()
-    const { name, hostname, ip, port, os, cpu, ram } = body
+    const parsed = createServerSchema.safeParse(body)
 
-    if (!name || !hostname || !ip) {
-      return NextResponse.json({ error: 'Name, hostname, and IP are required' }, { status: 400 })
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Validation failed', details: parsed.error.flatten().fieldErrors },
+        { status: 400 }
+      )
     }
 
+    const { name, hostname, ip, port, os, cpu, ram } = parsed.data
     const licenseKey = `AI-${uuidv4()}`
 
     const server = await db.server.create({
@@ -52,9 +72,10 @@ export async function POST(request: NextRequest) {
     })
 
     // Fetch geolocation in the background (don't block the response)
-    fetch('/api/geo', {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_APP_URL || ''
+    fetch(`${apiBaseUrl}/api/geo`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': process.env.AI_ARENA_API_KEY || '' },
       body: JSON.stringify({ ip }),
     })
       .then((res) => res.json())
@@ -79,7 +100,7 @@ export async function POST(request: NextRequest) {
       })
 
     return NextResponse.json(server, { status: 201 })
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to create server' }, { status: 500 })
   }
 }

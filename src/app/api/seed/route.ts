@@ -1,11 +1,16 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { validateApiKey } from '@/lib/api-auth'
 
 export async function POST() {
+  const auth = validateApiKey(new (await import('next/server')).NextRequest(new Request('http://localhost/api/seed', { method: 'POST' })))
+  if (!auth.valid) return auth.error!
+
   try {
     // Clear existing data for fresh seed
     await db.connectionLog.deleteMany({})
     await db.licenseKey.deleteMany({})
+    await db.auditLog.deleteMany({})
     await db.server.deleteMany({})
 
     const demoServers = [

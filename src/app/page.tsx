@@ -317,11 +317,13 @@ export default function Home() {
     appId: '',
   })
 
+  const apiHeaders = { 'X-API-Key': process.env.NEXT_PUBLIC_API_KEY || '' }
+
   const fetchData = useCallback(async () => {
     try {
       const [serversRes, keysRes] = await Promise.all([
-        fetch('/api/servers'),
-        fetch('/api/license'),
+        fetch('/api/servers', { headers: apiHeaders }),
+        fetch('/api/license', { headers: apiHeaders }),
       ])
 
       if (serversRes.ok) {
@@ -342,7 +344,7 @@ export default function Home() {
   useEffect(() => {
     fetchData()
     // Seed demo data on first load
-    fetch('/api/seed', { method: 'POST' }).then(() => fetchData())
+    fetch('/api/seed', { method: 'POST', headers: apiHeaders }).then(() => fetchData())
   }, [fetchData])
 
   const handleAddServer = async (data: {
@@ -357,7 +359,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/servers', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiHeaders },
         body: JSON.stringify(data),
       })
       if (res.ok) {
@@ -371,7 +373,7 @@ export default function Home() {
 
   const handleDeleteServer = async (server: Server) => {
     try {
-      const res = await fetch(`/api/servers/${server.id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/servers/${server.id}`, { method: 'DELETE', headers: apiHeaders })
       if (res.ok) {
         toast.success(`"${server.name}" deleted`)
         fetchData()
@@ -386,7 +388,7 @@ export default function Home() {
     try {
       const res = await fetch(`/api/servers/${editServer.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiHeaders },
         body: JSON.stringify(data),
       })
       if (res.ok) {
@@ -402,7 +404,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/license', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiHeaders },
         body: JSON.stringify({}),
       })
       if (res.ok) {

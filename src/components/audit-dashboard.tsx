@@ -130,9 +130,11 @@ export function AuditDashboard() {
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  const apiHeaders = { 'X-API-Key': process.env.NEXT_PUBLIC_API_KEY || '' }
+
   useEffect(() => {
     // Try fetching real data, fall back to demo
-    fetch('/api/audit')
+    fetch('/api/audit', { headers: apiHeaders })
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
@@ -174,7 +176,7 @@ export function AuditDashboard() {
 
   const handleRefresh = () => {
     setIsLoading(true)
-    fetch('/api/audit')
+    fetch('/api/audit', { headers: apiHeaders })
       .then(r => r.json())
       .then(d => { if (Array.isArray(d) && d.length > 0) setLogs(d) })
       .catch(() => {})
