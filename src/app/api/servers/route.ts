@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Name, hostname, and IP are required' }, { status: 400 })
     }
 
-    const licenseKey = `RH-${uuidv4()}`
+    const licenseKey = `AI-${uuidv4()}`
 
     const server = await db.server.create({
       data: {
@@ -50,6 +50,33 @@ export async function POST(request: NextRequest) {
         isActive: true,
       },
     })
+
+    // Fetch geolocation in the background (don't block the response)
+    fetch('/api/geo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    })
+      .then((res) => res.json())
+      .then(async (geoData) => {
+        if (geoData && geoData.country) {
+          await db.server.update({
+            where: { id: server.id },
+            data: {
+              country: geoData.country || null,
+              countryCode: geoData.countryCode || null,
+              city: geoData.city || null,
+              region: geoData.regionName || geoData.region || null,
+              isp: geoData.isp || null,
+              latitude: geoData.lat ?? null,
+              longitude: geoData.lon ?? null,
+            },
+          })
+        }
+      })
+      .catch(() => {
+        // Silently ignore geo lookup failures
+      })
 
     return NextResponse.json(server, { status: 201 })
   } catch (error) {

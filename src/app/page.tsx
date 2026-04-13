@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { useRemoteHubStore, Server, ConnectionLog } from '@/lib/store'
+import { useAiArenaStore, Server, ConnectionLog } from '@/lib/store'
 import { SidebarNav } from '@/components/sidebar-nav'
 import { ServerCard } from '@/components/server-card'
 import { StatsOverview } from '@/components/stats-overview'
@@ -71,7 +71,7 @@ function AddServerDialog({
         <DialogHeader>
           <DialogTitle className="text-white">Add New Server</DialogTitle>
           <DialogDescription className="text-zinc-400">
-            Register a new server to manage remotely via RemoteHub.
+            Register a new server to manage remotely via Ai-Arena.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
@@ -300,7 +300,7 @@ export default function Home() {
     setSelectedServer,
     isConnected,
     setConnected,
-  } = useRemoteHubStore()
+  } = useAiArenaStore()
 
   const [search, setSearch] = useState('')
   const [showAddDialog, setShowAddDialog] = useState(false)
@@ -479,7 +479,7 @@ export default function Home() {
                   {activeTab === 'connect' && 'Remote desktop & terminal access'}
                   {activeTab === 'keys' && `${licenseKeys.length} license keys`}
                   {activeTab === 'agent' && 'Deploy agents to your servers'}
-                  {activeTab === 'settings' && 'Configure RemoteHub'}
+                  {activeTab === 'settings' && 'Configure Ai-Arena'}
                 </p>
               </div>
             </div>
@@ -705,7 +705,7 @@ export default function Home() {
 
               {/* About */}
               <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
-                <h3 className="text-sm font-semibold text-white mb-3">About RemoteHub</h3>
+                <h3 className="text-sm font-semibold text-white mb-3">About Ai-Arena</h3>
                 <div className="space-y-1 text-xs text-zinc-500">
                   <p>Version: <span className="text-zinc-300">1.0.0</span></p>
                   <p>Built with: <span className="text-zinc-300">Next.js 16, TypeScript, Tailwind CSS</span></p>
@@ -719,7 +719,7 @@ export default function Home() {
         {/* Footer */}
         <footer className="border-t border-zinc-800/60 px-4 lg:px-6 py-3 mt-auto">
           <div className="flex items-center justify-between text-[10px] text-zinc-600">
-            <span>RemoteHub v1.0.0 — Private Server Management</span>
+            <span>Ai-Arena v1.0.0 — Remote Server Management</span>
             <div className="flex items-center gap-3">
               <span className="flex items-center gap-1">
                 <Wifi className="w-3 h-3" />

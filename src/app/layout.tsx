@@ -14,10 +14,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RemoteHub — Private Server Management",
-  description: "Web-based remote server management platform. Manage servers, screen share, webcam access, and terminal control with license key security.",
+  title: "Ai-Arena — Remote Server Management",
+  description: "Web-based remote server management platform by Ai-Arena. Manage servers, screen share, webcam access, and terminal control with license key security.",
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/favicon.ico",
   },
 };
 

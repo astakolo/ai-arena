@@ -221,7 +221,7 @@ export function LicenseManager({ licenseKeys, onGenerate, onRevoke, isLoading }:
             <AlertDialogTitle className="text-white">Revoke License Key</AlertDialogTitle>
             <AlertDialogDescription className="text-zinc-400">
               Are you sure you want to revoke this license key? The associated server will no longer be
-              able to authenticate with RemoteHub.
+              able to authenticate with Ai-Arena.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

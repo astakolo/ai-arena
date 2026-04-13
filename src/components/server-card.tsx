@@ -13,6 +13,7 @@ import {
   Pencil,
   Trash2,
   Copy,
+  MapPin,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -41,6 +42,11 @@ interface ServerCardProps {
   onConnect: (server: ServerType) => void
   onEdit: (server: ServerType) => void
   onDelete: (server: ServerType) => void
+}
+
+function getCountryFlag(code: string): string {
+  if (!code || code === 'LN') return ''
+  return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65))
 }
 
 export function ServerCard({ server, onConnect, onEdit, onDelete }: ServerCardProps) {
@@ -139,6 +145,12 @@ export function ServerCard({ server, onConnect, onEdit, onDelete }: ServerCardPr
             <Globe className="w-3.5 h-3.5 text-zinc-600" />
             <span className="font-mono">{server.ip}:{server.port}</span>
           </div>
+          {server.country && (
+            <div className="flex items-center gap-2 text-zinc-400">
+              <MapPin className="w-3.5 h-3.5 text-zinc-600" />
+              <span>{server.countryCode ? getCountryFlag(server.countryCode) : ''} {server.city}{server.city && server.country ? ', ' : ''}{server.country}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-zinc-400">
             <Cpu className="w-3.5 h-3.5 text-zinc-600" />
             <span className="truncate">{server.cpu || 'Unknown'}</span>

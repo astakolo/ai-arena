@@ -11,6 +11,13 @@ export interface Server {
   os: string | null
   cpu: string | null
   ram: string | null
+  country: string | null
+  countryCode: string | null
+  city: string | null
+  region: string | null
+  isp: string | null
+  latitude: number | null
+  longitude: number | null
   lastSeen: string | null
   createdAt: string
   updatedAt: string
@@ -33,7 +40,7 @@ export interface ConnectionLog {
   createdAt: string
 }
 
-interface RemoteHubState {
+interface AiArenaState {
   servers: Server[]
   selectedServer: Server | null
   isConnected: boolean
@@ -57,7 +64,7 @@ interface RemoteHubState {
   clearTerminal: () => void
 }
 
-export const useRemoteHubStore = create<RemoteHubState>((set) => ({
+export const useAiArenaStore = create<AiArenaState>((set) => ({
   servers: [],
   selectedServer: null,
   isConnected: false,

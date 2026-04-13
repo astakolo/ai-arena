@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { useRemoteHubStore } from '@/lib/store'
+import { useAiArenaStore } from '@/lib/store'
 import {
   Plug,
   Unplug,
@@ -14,6 +14,7 @@ import {
   Terminal,
   FolderOpen,
   Mic,
+  MapPin,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -44,7 +45,7 @@ const toolTabs: { id: ToolTab; label: string; icon: typeof Monitor }[] = [
 
 export function ConnectionPanel() {
   const { servers, selectedServer, setSelectedServer, isConnected, setConnected, setConnectionQuality } =
-    useRemoteHubStore()
+    useAiArenaStore()
   const [licenseInput, setLicenseInput] = useState('')
   const [isVerifying, setIsVerifying] = useState(false)
   const [activeTool, setActiveTool] = useState<ToolTab>('desktop')
@@ -184,7 +185,7 @@ export function ConnectionPanel() {
                 <Input
                   value={licenseInput}
                   onChange={(e) => setLicenseInput(e.target.value)}
-                  placeholder="RH-xxxx-xxxx-xxxx-..."
+                  placeholder="AI-xxxx-xxxx-xxxx-..."
                   className="pl-9 bg-zinc-950 border-zinc-800 text-white font-mono text-sm placeholder:text-zinc-600"
                 />
               </div>
@@ -228,6 +229,13 @@ export function ConnectionPanel() {
                 <p className="text-xs text-zinc-500">
                   {selectedServer?.hostname} ({selectedServer?.ip})
                 </p>
+                {selectedServer?.country && (
+                  <p className="text-[10px] text-zinc-500 flex items-center gap-1 mt-0.5">
+                    <MapPin className="w-3 h-3" />
+                    {selectedServer.countryCode ? String.fromCodePoint(...[...selectedServer.countryCode.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)) : ''}
+                    {' '}{selectedServer.city}{selectedServer.city && selectedServer.country ? ', ' : ''}{selectedServer.country}
+                  </p>
+                )}
               </div>
             </div>
             <Button

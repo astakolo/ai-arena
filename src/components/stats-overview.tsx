@@ -120,7 +120,7 @@ export function StatsOverview({ servers, recentLogs, serversMap }: StatsOverview
           <ServerIcon className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
           <h3 className="text-sm font-medium text-zinc-400">No servers registered</h3>
           <p className="text-xs text-zinc-600 mt-1">
-            Add your first server to get started with RemoteHub
+            Add your first server to get started with Ai-Arena
           </p>
           <div className="mt-3 flex items-center justify-center gap-1 text-xs text-zinc-600">
             <AlertCircle className="w-3 h-3" />

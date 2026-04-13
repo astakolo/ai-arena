@@ -10,7 +10,7 @@ import {
   Plug,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useRemoteHubStore } from '@/lib/store'
+import { useAiArenaStore } from '@/lib/store'
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -25,7 +25,7 @@ interface SidebarNavProps {
 }
 
 export function SidebarNav({ className }: SidebarNavProps) {
-  const { activeTab, setActiveTab, sidebarOpen, setSidebarOpen, servers } = useRemoteHubStore()
+  const { activeTab, setActiveTab, sidebarOpen, setSidebarOpen, servers } = useAiArenaStore()
 
   const onlineCount = servers.filter((s) => s.status === 'online').length
   const totalCount = servers.length
@@ -52,8 +52,8 @@ export function SidebarNav({ className }: SidebarNavProps) {
               <Monitor className="w-5 h-5 text-emerald-400" />
             </div>
             <div>
-              <h1 className="text-sm font-bold text-white tracking-wide">RemoteHub</h1>
-              <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Server Manager</p>
+              <h1 className="text-sm font-bold text-white tracking-wide">Ai-Arena</h1>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Remote Management</p>
             </div>
           </div>
         </div>

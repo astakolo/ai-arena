@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { serverId } = body
 
-    const key = `RH-${uuidv4()}`
+    const key = `AI-${uuidv4()}`
 
     const licenseKey = await db.licenseKey.create({
       data: {

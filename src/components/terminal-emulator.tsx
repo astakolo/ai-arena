@@ -92,7 +92,7 @@ const commandResponses: Record<string, string[]> = {
 
 export function TerminalEmulator({ isConnected, serverName }: TerminalEmulatorProps) {
   const [lines, setLines] = useState<Array<{ text: string; isHtml?: boolean }>>([
-    { text: 'RemoteHub Terminal v1.0.0', isHtml: false },
+    { text: 'Ai-Arena Terminal v1.0.0', isHtml: false },
     { text: 'Type "help" for available commands.', isHtml: false },
     { text: '', isHtml: false },
   ])

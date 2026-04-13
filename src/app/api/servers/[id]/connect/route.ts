@@ -22,7 +22,7 @@ export async function POST(
       data: {
         serverId: id,
         action: 'connect',
-        details: 'Connection initiated from RemoteHub dashboard',
+        details: 'Connection initiated from Ai-Arena dashboard',
       },
     })
 

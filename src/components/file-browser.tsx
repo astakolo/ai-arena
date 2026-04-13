@@ -61,12 +61,12 @@ const simulatedFS: Record<string, FileItem[]> = {
     { name: 'Program Files (x86)', type: 'folder', size: '', modified: '2026-02-20 14:15' },
     { name: 'ProgramData', type: 'folder', size: '', modified: '2026-03-01 11:00' },
     { name: 'inetpub', type: 'folder', size: '', modified: '2026-01-05 10:00' },
-    { name: 'RemoteHub', type: 'folder', size: '', modified: '2026-04-10 16:30' },
+    { name: 'Ai-Arena', type: 'folder', size: '', modified: '2026-04-10 16:30' },
     { name: 'pagefile.sys', type: 'file', size: '8.00 GB', modified: '2026-04-13 07:00', ext: '.sys' },
     { name: 'hiberfil.sys', type: 'file', size: '3.24 GB', modified: '2026-04-13 07:00', ext: '.sys' },
   ],
-  'C:\\RemoteHub': [
-    { name: 'remotehub-agent.js', type: 'file', size: '12.4 KB', modified: '2026-04-10 16:30', ext: '.js' },
+  'C:\\Ai-Arena': [
+    { name: 'ai-arena-agent.js', type: 'file', size: '12.4 KB', modified: '2026-04-10 16:30', ext: '.js' },
     { name: 'package.json', type: 'file', size: '1.2 KB', modified: '2026-04-10 16:28', ext: '.json' },
     { name: 'node_modules', type: 'folder', size: '', modified: '2026-04-10 16:29' },
     { name: 'logs', type: 'folder', size: '', modified: '2026-04-13 08:00' },
@@ -74,13 +74,13 @@ const simulatedFS: Record<string, FileItem[]> = {
     { name: 'install.bat', type: 'file', size: '2.1 KB', modified: '2026-04-10 16:30', ext: '.bat' },
     { name: 'README.md', type: 'file', size: '4.5 KB', modified: '2026-04-10 16:22', ext: '.md' },
   ],
-  'C:\\RemoteHub\\logs': [
+  'C:\\Ai-Arena\\logs': [
     { name: 'agent-2026-04-13.log', type: 'file', size: '24.8 KB', modified: '2026-04-13 08:15', ext: '.log' },
     { name: 'agent-2026-04-12.log', type: 'file', size: '18.2 KB', modified: '2026-04-12 23:59', ext: '.log' },
     { name: 'agent-2026-04-11.log', type: 'file', size: '21.6 KB', modified: '2026-04-11 23:59', ext: '.log' },
     { name: 'error-2026-04-10.log', type: 'file', size: '3.1 KB', modified: '2026-04-10 22:45', ext: '.log' },
   ],
-  'C:\\RemoteHub\\config': [
+  'C:\\Ai-Arena\\config': [
     { name: 'settings.json', type: 'file', size: '0.8 KB', modified: '2026-04-10 16:25', ext: '.json' },
     { name: 'firewall-rules.bat', type: 'file', size: '1.4 KB', modified: '2026-04-10 16:20', ext: '.bat' },
   ],
@@ -116,7 +116,7 @@ const simulatedFS: Record<string, FileItem[]> = {
     { name: 'nodejs', type: 'folder', size: '', modified: '2026-02-20 14:15' },
     { name: 'Common Files', type: 'folder', size: '', modified: '2026-01-10 08:30' },
     { name: 'Windows Defender', type: 'folder', size: '', modified: '2026-04-01 12:00' },
-    { name: 'RemoteHub Service', type: 'folder', size: '', modified: '2026-04-10 16:35' },
+    { name: 'Ai-Arena Service', type: 'folder', size: '', modified: '2026-04-10 16:35' },
   ],
 }
 

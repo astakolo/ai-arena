@@ -18,6 +18,13 @@ model Server {
   os          String?
   cpu         String?
   ram         String?
+  country     String?
+  countryCode String?
+  city        String?
+  region      String?
+  isp         String?
+  latitude    Float?
+  longitude   Float?
   lastSeen    DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
