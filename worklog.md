@@ -90,3 +90,63 @@ All linting passed with zero errors and zero warnings.
 
 ### Dev Server
 Running on port 3000, returning HTTP 200.
+
+---
+
+## Task 3: Cross-Platform Agent v3.0 + Dormant Mode + macOS Support
+
+### Date: 2026-04-13
+
+### Summary
+Upgraded the Ai-Arena agent from v2.0 (Windows-only) to v3.0 (cross-platform Windows + macOS). Added Firebase `onDisconnect()` for automatic offline detection, clarified dormant/sleep behavior, and created a macOS installer using launchd.
+
+---
+
+### Changes Made
+
+#### 1. Dormant Mode (Bandwidth Optimization)
+- Agent uses Firebase `onChildAdded` (server-push) — it does NOT poll
+- Only sends heartbeat every 30s (~200 bytes: timestamp + RAM + CPU)
+- Idle bandwidth: ~576 KB/month per agent
+- 10 dormant agents = ~5.7 MB/month (Firebase free tier: 10 GB/month)
+- Exponential backoff reconnect (5s → 60s max) after network drops
+
+#### 2. Online/Offline Tracking via onDisconnect()
+- Added Firebase `onDisconnect()` handler: auto-marks agent as "offline" if:
+  - Computer crashes
+  - Loses power
+  - Internet drops
+  - Process killed
+- Records `disconnectedAt` timestamp automatically
+- Dashboard can listen to `/agents/{key}/status` for real green/red status
+- No polling needed — Firebase handles disconnect detection server-side
+
+#### 3. macOS Support
+- Created `install-ai-arena.sh` shell script installer
+- Uses Homebrew to install Node.js if missing
+- Sets up launchd (RunAtLoad + KeepAlive) for auto-start on boot
+- Crash recovery via launchd KeepAlive
+- Installs to `/usr/local/ai-arena/` (needs sudo)
+- Logs to `/Library/Logs/Ai-Arena/`
+- macOS login monitoring via `last` command
+
+#### 4. Cross-Platform Agent Code
+- Single `ai-arena-agent.js` file works on both Windows and macOS
+- Auto-detects platform via `os.platform()`
+- Windows: uses `cmd.exe` shell, PowerShell for system info, Windows Security Event Log for logon monitoring
+- macOS: uses `/bin/bash` shell, `sw_vers` for system info, `last` for login monitoring
+- Terminal session uses correct shell per platform
+- System restart/shutdown commands use correct OS commands
+
+#### 5. Updated AgentSetup Component
+- Added platform tabs (Windows / macOS)
+- Added macOS installation steps
+- Added bandwidth usage calculator
+- Added dormant mode + online/offline explanation section
+- All three downloadables: agent .js, Windows .bat, macOS .sh
+
+### Files Modified (1)
+- `src/components/agent-setup.tsx` — Complete rewrite for v3.0
+
+### Lint Results
+All linting passed with zero errors and zero warnings.

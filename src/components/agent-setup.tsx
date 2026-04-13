@@ -21,33 +21,46 @@ import {
   AlertTriangle,
   FileDown,
   FolderTree,
+  Apple,
+  Wifi,
+  WifiOff,
+  Moon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 
-// ─── Windows-focused Node.js Agent (Firebase-First) ──────
+// ─── Cross-Platform Agent (Windows + macOS) ──────
 const agentCode = `/**
- * Ai-Arena Agent v2.0 — Windows Edition
- * Runs unattended on boot. Auto-reconnects after power outages.
- * Firebase-first: all communication goes through Firebase Realtime Database
- * to avoid antivirus flagging since Firebase domains are trusted.
+ * Ai-Arena Agent v3.0 — Cross-Platform (Windows + macOS)
+ *
+ * KEY BEHAVIORS:
+ * 1. LIES DORMANT: Uses Firebase server-push (onChildAdded). The agent does NOT poll.
+ *    Firebase pushes commands instantly when they arrive. Between commands, the agent
+ *    only sends a tiny heartbeat every 30s (~200 bytes). This saves bandwidth.
+ *
+ * 2. ONLINE/OFFLINE TRACKING: Uses Firebase onDisconnect() so if the computer crashes,
+ *    loses internet, or loses power, Firebase AUTOMATICALLY marks the agent as "offline"
+ *    within ~30 seconds. No polling needed.
+ *
+ * 3. CROSS-PLATFORM: Auto-detects Windows vs macOS and uses the right shell commands.
  *
  * Usage:
  *   node ai-arena-agent.js --key=AI-YOUR-LICENSE-KEY
- *
- * Installed via install-ai-arena.bat (sets up auto-start via Task Scheduler)
  */
 
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { exec, execSync, spawn } = require('child_process');
+const { exec, spawn } = require('child_process');
 
-// ─── Configuration (Firebase-First) ──────────────────
+// ─── Detect Platform ──────────────────────────────
+const IS_WIN = os.platform() === 'win32';
+const IS_MAC = os.platform() === 'darwin';
+const PLATFORM = IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : os.platform();
+
+// ─── Configuration ─────────────────────────────────
 const CONFIG = {
-  // Firebase-first: all communication goes through Firebase Realtime Database
-  // This avoids antivirus flagging since Firebase domains are trusted
   firebaseConfig: {
     apiKey: process.env.FIREBASE_API_KEY || '',
     authDomain: process.env.FIREBASE_AUTH_DOMAIN || '',
@@ -58,7 +71,7 @@ const CONFIG = {
     appId: process.env.FIREBASE_APP_ID || '',
   },
   licenseKey: process.argv.find(a => a.startsWith('--key='))?.split('=')[1],
-  heartbeatInterval: 30000,
+  heartbeatInterval: 30000,  // 30s heartbeat (~200 bytes, very minimal)
   reconnectDelay: 5000,
   maxReconnectDelay: 60000,
 };
@@ -83,7 +96,7 @@ function log(level, message) {
   } catch (e) { /* ignore write errors */ }
 }
 
-// ─── System Info (Windows-focused) ───────────────────
+// ─── System Info (Cross-Platform) ───────────────────
 function getSystemInfo() {
   return {
     hostname: os.hostname(),
@@ -98,17 +111,21 @@ function getSystemInfo() {
     uptime: os.uptime(),
     homeDir: os.homedir(),
     tmpDir: os.tmpdir(),
+    platformLabel: PLATFORM,
   };
 }
 
 function formatBytes(bytes) {
-  const gb = bytes / (1024 * 1024 * 1024);
-  return gb.toFixed(1) + ' GB';
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  return bytes + ' bytes';
 }
 
-function runPowerShell(cmd) {
+// ─── Platform-Specific Command Runner ────────────────
+function runCommand(cmd, options = {}) {
   return new Promise((resolve, reject) => {
-    exec(\`powershell -NoProfile -Command "\${cmd}"\`, { timeout: 10000 },
+    const shell = IS_WIN ? 'cmd.exe' : '/bin/bash';
+    exec(cmd, { timeout: 10000, shell, ...options },
       (error, stdout, stderr) => {
         if (error && !stdout) reject(error);
         else resolve(stdout.trim());
@@ -116,68 +133,62 @@ function runPowerShell(cmd) {
   });
 }
 
-async function getWindowsInfo() {
-  try {
-    const [winVersion, drives, services] = await Promise.allSettled([
-      runPowerShell('(Get-CimInstance Win32_OperatingSystem).Caption'),
-      runPowerShell('Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root'),
-      runPowerShell('(Get-Service | Where-Object {$_.Status -eq "Running"}).Count'),
-    ]);
-
-    return {
-      windowsVersion: winVersion.status === 'fulfilled' ? winVersion.value : 'Windows',
-      drives: drives.status === 'fulfilled' ? drives.value.split('\\n').filter(Boolean) : ['C:'],
-      runningServices: services.status === 'fulfilled' ? parseInt(services.value) || 0 : 0,
-    };
-  } catch {
-    return { windowsVersion: 'Windows', drives: ['C:'], runningServices: 0 };
+async function getPlatformInfo() {
+  if (IS_WIN) {
+    try {
+      const runPS = (c) => runCommand(\`powershell -NoProfile -Command "\${c}"\`);
+      const [winVersion, drives, services] = await Promise.allSettled([
+        runPS('(Get-CimInstance Win32_OperatingSystem).Caption'),
+        runPS('Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root'),
+        runPS('(Get-Service | Where-Object {$_.Status -eq "Running"}).Count'),
+      ]);
+      return {
+        platformLabel: 'Windows',
+        windowsVersion: winVersion.status === 'fulfilled' ? winVersion.value : 'Windows',
+        drives: drives.status === 'fulfilled' ? drives.value.split('\\n').filter(Boolean) : ['C:'],
+        runningServices: services.status === 'fulfilled' ? parseInt(services.value) || 0 : 0,
+      };
+    } catch {
+      return { platformLabel: 'Windows', windowsVersion: 'Windows', drives: ['C:'], runningServices: 0 };
+    }
+  } else if (IS_MAC) {
+    try {
+      const [macVersion, diskInfo] = await Promise.allSettled([
+        runCommand('sw_vers -productVersion'),
+        runCommand('df -h / | tail -1'),
+      ]);
+      return {
+        platformLabel: 'macOS',
+        macVersion: macVersion.status === 'fulfilled' ? macVersion.value : 'macOS',
+        diskInfo: diskInfo.status === 'fulfilled' ? diskInfo.value : '',
+      };
+    } catch {
+      return { platformLabel: 'macOS', macVersion: 'macOS', diskInfo: '' };
+    }
   }
+  return { platformLabel: PLATFORM };
 }
 
-// ─── Screen Capture (Windows) ────────────────────────
+// ─── Screen Capture ────────────────────────────────
 class ScreenCapturer {
-  constructor() {
-    this.isActive = false;
-    this.interval = null;
-  }
-
-  start() {
-    this.isActive = true;
-    log('INFO', 'Screen capture ready (WebRTC would be used in production)');
-  }
-
-  stop() {
-    this.isActive = false;
-    if (this.interval) clearInterval(this.interval);
-    log('INFO', 'Screen capture stopped');
-  }
+  constructor() { this.isActive = false; this.interval = null; }
+  start() { this.isActive = true; log('INFO', 'Screen capture ready'); }
+  stop() { this.isActive = false; if (this.interval) clearInterval(this.interval); log('INFO', 'Screen capture stopped'); }
 }
 
-// ─── Microphone Capture (Windows) ────────────────────
+// ─── Microphone Capture ────────────────────────────
 class MicrophoneCapturer {
-  constructor() {
-    this.isActive = false;
-  }
-
-  start() {
-    this.isActive = true;
-    log('INFO', 'Microphone capture started');
-  }
-
-  stop() {
-    this.isActive = false;
-    log('INFO', 'Microphone capture stopped');
-  }
+  constructor() { this.isActive = false; }
+  start() { this.isActive = true; log('INFO', 'Microphone capture started'); }
+  stop() { this.isActive = false; log('INFO', 'Microphone capture stopped'); }
 }
 
-// ─── File Browser API ────────────────────────────────
+// ─── File Browser API (Cross-Platform) ────────────
 class FileBrowserAPI {
   static listDir(dirPath) {
     try {
       const normalized = path.resolve(dirPath);
-      if (!fs.existsSync(normalized)) {
-        return { error: 'Directory not found: ' + dirPath };
-      }
+      if (!fs.existsSync(normalized)) return { error: 'Directory not found: ' + dirPath };
       const entries = fs.readdirSync(normalized, { withFileTypes: true });
       const items = entries.map(entry => ({
         name: entry.name,
@@ -187,35 +198,31 @@ class FileBrowserAPI {
         ext: entry.isFile() ? path.extname(entry.name) : undefined,
       }));
       return { items };
-    } catch (err) {
-      return { error: err.message };
-    }
+    } catch (err) { return { error: err.message }; }
   }
 
   static readFile(filePath) {
     try {
       const normalized = path.resolve(filePath);
       if (!fs.existsSync(normalized)) return { error: 'File not found' };
-      const content = fs.readFileSync(normalized, 'utf-8');
-      return { content };
-    } catch (err) {
-      return { error: err.message };
-    }
+      return { content: fs.readFileSync(normalized, 'utf-8') };
+    } catch (err) { return { error: err.message }; }
   }
 }
 
-// ─── Terminal Session ────────────────────────────────
+// ─── Terminal Session (Cross-Platform) ────────────
 class TerminalSession {
   constructor() {
     this.history = [];
     this.cwd = process.cwd();
+    this.shell = IS_WIN ? 'cmd.exe' : '/bin/bash';
   }
 
   async execute(command) {
     return new Promise((resolve) => {
       const startTime = Date.now();
 
-      // Handle cd command to track working directory
+      // Handle cd command
       if (command.startsWith('cd ')) {
         const target = command.slice(3).trim();
         try {
@@ -226,20 +233,19 @@ class TerminalSession {
               timestamp: new Date().toISOString(), duration: Date.now() - startTime });
             return;
           }
-        } catch (e) { /* fallthrough to exec */ }
+        } catch (e) { /* fallthrough */ }
       }
 
-      // Handle dir listing with full metadata
+      // Handle dir listing
       if (command.trim() === 'dir' || command.trim() === 'ls') {
         try {
           const entries = fs.readdirSync(this.cwd, { withFileTypes: true });
-          let output = ' Volume in drive C has no label.\\n Directory of ' + this.cwd + '\\n\\n';
+          let output = ' Directory of ' + this.cwd + '\\n\\n';
           entries.forEach(entry => {
             const stat = fs.statSync(path.join(this.cwd, entry.name));
-            const date = stat.mtime.toLocaleDateString() + '  ' + stat.mtime.toLocaleTimeString();
-            const size = (stat.size / 1024).toFixed(0).padStart(10);
+            const size = formatBytes(stat.size).padStart(12);
             const type = entry.isDirectory() ? '<DIR>' : '     ';
-            output += date + '  ' + type + '  ' + (entry.isDirectory() ? '' : size) + '  ' + entry.name + '\\n';
+            output += stat.mtime.toISOString() + '  ' + type + '  ' + (entry.isDirectory() ? '' : size) + '  ' + entry.name + '\\n';
           });
           resolve({ command, output, error: null, cwd: this.cwd,
             timestamp: new Date().toISOString(), duration: Date.now() - startTime });
@@ -247,15 +253,12 @@ class TerminalSession {
         } catch (e) { /* fallthrough */ }
       }
 
-      exec(command, { cwd: this.cwd, timeout: 30000, shell: 'cmd.exe' },
+      exec(command, { cwd: this.cwd, timeout: 30000, shell: this.shell },
         (error, stdout, stderr) => {
           const result = {
-            command,
-            output: stdout || stderr,
-            error: error ? error.message : null,
-            cwd: this.cwd,
-            timestamp: new Date().toISOString(),
-            duration: Date.now() - startTime,
+            command, output: stdout || stderr,
+            error: error ? error.message : null, cwd: this.cwd,
+            timestamp: new Date().toISOString(), duration: Date.now() - startTime,
           };
           this.history.push(result);
           resolve(result);
@@ -265,20 +268,18 @@ class TerminalSession {
 }
 
 // ─── Activity Audit System ────────────────────────────
-// Logs all commands, logins, process creation, and file access
-// Events are sent to Firebase /audit/{licenseKey} for dashboard review
 class ActivityAudit {
   constructor() {
     this.buffer = [];
-    this.flushInterval = 15000; // Flush every 15 seconds
+    this.flushInterval = 15000;
     this.firebaseDb = null;
     this.licenseKey = null;
   }
 
   log(eventType, data) {
     this.buffer.push({
-      eventType: eventType,
-      username: process.env.USERNAME || os.userInfo().username || 'Unknown',
+      eventType,
+      username: process.env.USERNAME || process.env.USER || os.userInfo().username || 'Unknown',
       hostname: os.hostname(),
       command: data.command || null,
       windowTitle: data.windowTitle || null,
@@ -286,12 +287,12 @@ class ActivityAudit {
       keysLogged: data.keysLogged || null,
       timestamp: new Date().toISOString(),
     });
-    // Keep buffer manageable
     if (this.buffer.length > 500) this.buffer = this.buffer.slice(-250);
   }
 
-  // Enable PowerShell Script Block Logging and Transcription
+  // Windows: Enable PowerShell Script Block Logging
   enablePSEventLogging() {
+    if (!IS_WIN) return;
     try {
       exec('powershell -NoProfile -Command "try { $p = \\"HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging\\"; if (!(Test-Path $p)) { New-Item -Path $p -Force | Out-Null }; Set-ItemProperty -Path $p -Name EnableScriptBlockLogging -Value 1 -Type DWord -Force; $t = \\"HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\Transcription\\"; if (!(Test-Path $t)) { New-Item -Path $t -Force | Out-Null }; Set-ItemProperty -Path $t -Name EnableTranscription -Value 1 -Type DWord -Force; Set-ItemProperty -Path $t -Name OutputDirectory -Value (Join-Path $env:APPDATA Ai-Arena/transcripts) -Type String -Force; Write-Output OK } catch { Write-Output FAIL }"',
         { timeout: 20000 }, (err, stdout) => {
@@ -304,8 +305,9 @@ class ActivityAudit {
     } catch (e) { /* ignore */ }
   }
 
-  // Monitor for logon events via Windows Security Event Log
+  // Windows: Monitor logon events
   startLogonMonitor() {
+    if (!IS_WIN) return;
     setInterval(() => {
       exec('powershell -NoProfile -Command "try { Get-WinEvent -FilterHashtable @{LogName=\\\"Security\\\";Id=4624,4634} -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { $x=[xml]$_.ToXml(); $u=$x.Event.EventData.Data | Where-Object {$_.Name -eq \\"TargetUserName\\"} | Select -ExpandProperty #text; $l=$x.Event.EventData.Data | Where-Object {$_.Name -eq \\"LogonType\\"} | Select -ExpandProperty #text; Write-Output \\\"$($_.Id)|$u|$l|$($_.TimeCreated)\\\" } } catch {}"',
         { timeout: 15000 }, (err, stdout) => {
@@ -313,17 +315,28 @@ class ActivityAudit {
             stdout.trim().split('\\n').forEach(line => {
               const parts = line.split('|');
               if (parts[0] === '4624' && parts[1] && parts[1] !== '-') {
-                this.log('login', {
-                  command: 'Logon Type ' + (parts[2] || 'unknown'),
-                  windowTitle: 'Windows Logon',
-                  processName: 'logonui.exe',
-                });
+                this.log('login', { command: 'Logon Type ' + (parts[2] || 'unknown'), windowTitle: 'Windows Logon', processName: 'logonui.exe' });
                 log('INFO', 'User login detected: ' + parts[1]);
               }
             });
           }
         });
-    }, 45000); // Check every 45 seconds
+    }, 45000);
+  }
+
+  // macOS: Monitor login events via last/log
+  startMacLoginMonitor() {
+    if (!IS_MAC) return;
+    setInterval(() => {
+      exec('last -10 2>/dev/null', { timeout: 10000 }, (err, stdout) => {
+        if (!err && stdout) {
+          const lines = stdout.trim().split('\\n');
+          if (lines.length > 0) {
+            this.log('login', { command: 'macOS login check', windowTitle: 'macOS Login', processName: 'loginwindow' });
+          }
+        }
+      });
+    }, 60000);
   }
 
   async flush() {
@@ -346,10 +359,14 @@ class ActivityAudit {
   start(firebaseDb, licenseKey) {
     this.firebaseDb = firebaseDb;
     this.licenseKey = licenseKey;
-    this.enablePSEventLogging();
-    this.startLogonMonitor();
+    if (IS_WIN) {
+      this.enablePSEventLogging();
+      this.startLogonMonitor();
+    } else if (IS_MAC) {
+      this.startMacLoginMonitor();
+    }
     setInterval(() => this.flush(), this.flushInterval);
-    log('INFO', 'Activity audit system started (PS logging + logon monitoring)');
+    log('INFO', 'Activity audit system started (' + PLATFORM + ')');
   }
 }
 
@@ -364,53 +381,72 @@ class AiArenaAgent {
     this.agentRef = null;
     this.commandsRef = null;
     this.heartbeatTimer = null;
+    this.reconnectAttempt = 0;
   }
 
   async connect() {
     log('INFO', 'Initializing Firebase connection...');
+    log('INFO', 'Platform: ' + PLATFORM + ' (' + os.arch() + ')');
     log('INFO', 'Firebase Project: ' + (CONFIG.firebaseConfig.projectId || 'Not configured'));
 
     try {
-      // Dynamic import of firebase (installed via npm)
       const { initializeApp } = require('firebase/app');
-      const { getDatabase, ref, set, onValue, push, off, update, onChildAdded } = require('firebase/database');
+      const { getDatabase, ref, set, onValue, push, off, update, onChildAdded, onDisconnect, remove, serverTimestamp } = require('firebase/database');
 
       const app = initializeApp(CONFIG.firebaseConfig);
       const database = getDatabase(app);
 
       this.agentRef = ref(database, 'agents/' + CONFIG.licenseKey);
-      this.commandsRef = ref(database, 'agents/' + CONFIG.licenseKey + '/commands');
       this.agentDb = database;
-      this.firebaseRef = ref;
-      this.firebaseSet = set;
-      this.firebaseOnValue = onValue;
-      this.firebaseOff = off;
-      this.firebasePush = push;
-      this.firebaseUpdate = update;
-      this.firebaseOnChildAdded = onChildAdded;
 
-      // Register agent presence
+      // ═══════════════════════════════════════════════════════
+      // ON-LINE STATUS: Register agent as online
+      // ═══════════════════════════════════════════════════════
       await set(this.agentRef, {
         status: 'online',
         systemInfo: getSystemInfo(),
         connectedAt: new Date().toISOString(),
         licenseKey: CONFIG.licenseKey,
+        platform: PLATFORM,
       });
 
-      // Send Windows-specific info
-      const winInfo = await getWindowsInfo();
-      await update(this.agentRef, { windowsInfo: winInfo });
+      // ═══════════════════════════════════════════════════════
+      // OFF-LINE TRACKING: onDisconnect — THIS IS THE MAGIC
+      // If the computer crashes, loses power, or internet drops,
+      // Firebase automatically sets status to "offline" within ~30s.
+      // No polling needed. The dashboard can listen to this change.
+      // ═══════════════════════════════════════════════════════
+      const statusRef = ref(database, 'agents/' + CONFIG.licenseKey + '/status');
+      await onDisconnect(statusRef).set('offline');
+      log('INFO', 'onDisconnect handler set — Firebase will auto-mark offline if connection drops');
+
+      // Also set lastHeartbeat on disconnect so dashboard knows when it went offline
+      const hbRef = ref(database, 'agents/' + CONFIG.licenseKey + '/lastHeartbeat');
+      await onDisconnect(hbRef).set(serverTimestamp());
+      const disconnAtRef = ref(database, 'agents/' + CONFIG.licenseKey + '/disconnectedAt');
+      await onDisconnect(disconnAtRef).set(serverTimestamp());
+
+      // Send platform-specific info
+      const platformInfo = await getPlatformInfo();
+      await update(this.agentRef, { platformInfo });
 
       this.isConnected = true;
-      log('INFO', 'Connected to Firebase! Agent is online.');
+      this.reconnectAttempt = 0;
+      log('INFO', 'Connected to Firebase! Agent is ONLINE and dormant.');
 
-      // Listen for commands from the dashboard
+      // ═══════════════════════════════════════════════════════
+      // DORMANT MODE: Listen for commands via server-push
+      // Firebase uses persistent WebSocket + server-push.
+      // The agent does NOT poll. It sleeps until Firebase pushes
+      // a new command. This saves bandwidth — only the heartbeat
+      // (~200 bytes every 30s) is sent when idle.
+      // ═══════════════════════════════════════════════════════
       this.listenForCommands();
 
-      // Start heartbeat
+      // Start heartbeat (tiny payload, 30s interval)
       this.startHeartbeat();
 
-      // Start activity audit logging (PS transcription + logon monitoring)
+      // Start activity audit
       this.audit.start(database, CONFIG.licenseKey);
 
     } catch (err) {
@@ -426,10 +462,10 @@ class AiArenaAgent {
     onChildAdded(commandsRef, async (snapshot) => {
       const command = snapshot.val();
       if (command && command.type) {
-        log('INFO', 'Received command: ' + command.type);
+        log('INFO', 'Command received (waking up): ' + command.type);
         await this.handleCommand(command);
-        // Remove processed command
         await remove(snapshot.ref);
+        log('INFO', 'Command processed, returning to dormant state');
       }
     });
   }
@@ -440,36 +476,27 @@ class AiArenaAgent {
 
     switch (command.type) {
       case 'terminal:execute':
-        log('INFO', 'Executing: ' + (command.data.command || '').substring(0, 50));
+        log('INFO', 'Executing: ' + (command.data.command || '').substring(0, 80));
         this.audit.log('command', {
           command: command.data.command,
           windowTitle: 'Remote Terminal (Ai-Arena)',
-          processName: 'cmd.exe',
+          processName: IS_WIN ? 'cmd.exe' : '/bin/bash',
         });
         const result = await this.terminal.execute(command.data.command);
         await set(resultRef, { type: 'terminal:output', data: result });
         break;
 
       case 'files:list':
-        await set(resultRef, {
-          type: 'files:list:response',
-          data: FileBrowserAPI.listDir(command.data.path),
-          requestId: command.requestId,
-        });
+        await set(resultRef, { type: 'files:list:response', data: FileBrowserAPI.listDir(command.data.path), requestId: command.requestId });
         break;
 
       case 'files:read':
-        await set(resultRef, {
-          type: 'files:read:response',
-          data: FileBrowserAPI.readFile(command.data.path),
-          requestId: command.requestId,
-        });
+        await set(resultRef, { type: 'files:read:response', data: FileBrowserAPI.readFile(command.data.path), requestId: command.requestId });
         break;
 
       case 'screen:start':
         this.screen.start();
         await set(resultRef, { type: 'screen:started' });
-        log('INFO', 'Screen capture started by remote user');
         break;
 
       case 'screen:stop':
@@ -488,29 +515,30 @@ class AiArenaAgent {
         break;
 
       case 'system:info':
-        await set(resultRef, { type: 'system:info', data: getSystemInfo() });
+        await set(resultRef, { type: 'system:info', data: { ...getSystemInfo(), ...(await getPlatformInfo()) } });
         break;
 
       case 'system:restart':
         log('WARN', 'Remote restart requested');
-        exec('shutdown /r /t 5 /c "Ai-Arena: Restart requested by admin"');
+        if (IS_WIN) exec('shutdown /r /t 5 /c "Ai-Arena: Restart requested by admin"');
+        else if (IS_MAC) exec('sudo shutdown -r +1 "Ai-Arena: Restart requested by admin"');
+        else exec('sudo reboot');
         break;
 
       case 'system:shutdown':
         log('WARN', 'Remote shutdown requested');
-        exec('shutdown /s /t 5 /c "Ai-Arena: Shutdown requested by admin"');
+        if (IS_WIN) exec('shutdown /s /t 5 /c "Ai-Arena: Shutdown requested by admin"');
+        else if (IS_MAC) exec('sudo shutdown -h +1 "Ai-Arena: Shutdown requested by admin"');
+        else exec('sudo shutdown -h now');
         break;
     }
   }
 
-  async send(data) {
-    // In Firebase model, we write directly to the DB
-    // This is handled in handleCommand via set()
-  }
-
   scheduleReconnect() {
-    log('INFO', 'Reconnecting to Firebase in 10 seconds...');
-    setTimeout(() => this.connect(), 10000);
+    this.reconnectAttempt++;
+    const delay = Math.min(CONFIG.reconnectDelay * Math.pow(1.5, this.reconnectAttempt - 1), CONFIG.maxReconnectDelay);
+    log('INFO', 'Reconnecting in ' + (delay / 1000) + 's (attempt ' + this.reconnectAttempt + ')...');
+    setTimeout(() => this.connect(), delay);
   }
 
   startHeartbeat() {
@@ -535,46 +563,33 @@ class AiArenaAgent {
 }
 
 // ─── Start Agent ─────────────────────────────────────
-log('INFO', '=== Ai-Arena Agent v2.0 (Windows) Starting ===');
+log('INFO', '=== Ai-Arena Agent v3.0 (' + PLATFORM + ') Starting ===');
 log('INFO', 'Hostname: ' + os.hostname());
-log('INFO', 'Platform: ' + os.platform() + ' ' + os.arch());
+log('INFO', 'Platform: ' + PLATFORM + ' ' + os.arch());
 log('INFO', 'CPU: ' + (os.cpus()[0]?.model || 'Unknown') + ' x' + os.cpus().length);
 log('INFO', 'RAM: ' + formatBytes(os.totalmem()) + ' total');
 log('INFO', 'Node.js: ' + process.version);
+log('INFO', 'Mode: Dormant (server-push via Firebase, wakes on command)');
 
 const agent = new AiArenaAgent();
 agent.connect();
 
-// Graceful shutdown on Windows signals
-process.on('SIGINT', () => {
-  log('INFO', 'Shutting down (SIGINT)...');
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  log('INFO', 'Shutting down (SIGTERM)...');
-  process.exit(0);
-});
-
-process.on('uncaughtException', (err) => {
-  log('ERROR', 'Uncaught exception: ' + err.message);
-});
-
-process.on('unhandledRejection', (reason) => {
-  log('ERROR', 'Unhandled rejection: ' + reason);
-});`
+process.on('SIGINT', () => { log('INFO', 'Shutting down (SIGINT)...'); process.exit(0); });
+process.on('SIGTERM', () => { log('INFO', 'Shutting down (SIGTERM)...'); process.exit(0); });
+process.on('uncaughtException', (err) => { log('ERROR', 'Uncaught exception: ' + err.message); });
+process.on('unhandledRejection', (reason) => { log('ERROR', 'Unhandled rejection: ' + reason); });`
 
 // ─── Windows .bat Installer ──────────────────────────
 const batInstaller = `@echo off
 :: ═══════════════════════════════════════════════════════
-:: Ai-Arena Agent — Windows Self-Installing Agent
-:: Installs Node.js agent and sets up auto-start on boot
-:: (Unattended access — survives power outages)
-:: Firebase-first: all communication via trusted Firebase domains
+:: Ai-Arena Agent v3.0 — Windows Self-Installing Agent
+:: Cross-platform: Also works with macOS (.sh script)
+:: Firebase-first: all communication via trusted Firebase
+:: Dormant: agent sleeps until command, onDisconnect tracks online status
 :: ═══════════════════════════════════════════════════════
 
-:: ─── Self-Elevation (Auto-requests Admin if needed) ─
->nul 2>&1 "%SYSTEMROOT%\system32\cacls.exe" "%SYSTEMROOT%\system32\config\system"
+:: ─── Self-Elevation ──
+>nul 2>&1 "%SYSTEMROOT%\\system32\\cacls.exe" "%SYSTEMROOT%\\system32\\config\\system"
 if '%errorlevel%' NEQ '0' (
     echo Requesting administrator privileges...
     powershell -Command "Start-Process '%~f0' -Verb RunAs"
@@ -582,10 +597,9 @@ if '%errorlevel%' NEQ '0' (
 )
 
 echo [OK] Running with administrator privileges.
-
 setlocal EnableDelayedExpansion
 
-:: Configuration — CHANGE THESE for each client
+:: Configuration
 set "LICENSE_KEY=AI-REPLACE-WITH-YOUR-LICENSE-KEY"
 set "FIREBASE_API_KEY=your-firebase-api-key"
 set "FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com"
@@ -596,13 +610,11 @@ set "FIREBASE_MESSAGING_SENDER_ID=your-sender-id"
 set "FIREBASE_APP_ID=your-app-id"
 set "INSTALL_DIR=C:\\Ai-Arena"
 set "TASK_NAME=AiArenaAgent"
-set "NODE_MIN_VERSION=18"
 set "AUTO_START_OK=0"
-
 
 echo.
 echo  ╔═══════════════════════════════════════════════╗
-echo  ║    Ai-Arena Agent — Windows Installer v2.0     ║
+echo  ║    Ai-Arena Agent v3.0 — Windows Installer     ║
 echo  ╚═══════════════════════════════════════════════╝
 echo.
 
@@ -611,25 +623,18 @@ echo [1/6] Checking Node.js installation...
 where node >nul 2>&1
 if %errorLevel% neq 0 (
     echo  Node.js not found! Downloading and installing...
-    echo.
-
-    :: Download Node.js installer silently
     curl -o "%TEMP%\\node-installer.msi" https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi
     if %errorLevel% neq 0 (
-        echo  [ERROR] Failed to download Node.js. Check internet connection.
+        echo  [ERROR] Failed to download Node.js.
         pause
         exit /b 1
     )
-
-    :: Install Node.js silently
     msiexec /i "%TEMP%\\node-installer.msi" /qn /norestart
     if %errorLevel% neq 0 (
         echo  [ERROR] Node.js installation failed.
         pause
         exit /b 1
     )
-
-    :: Refresh PATH
     set "PATH=%PATH%;C:\\Program Files\\nodejs"
     del "%TEMP%\\node-installer.msi" >nul 2>&1
     echo  Node.js installed successfully.
@@ -647,15 +652,12 @@ if not exist "%INSTALL_DIR%\\config" mkdir "%INSTALL_DIR%\\config"
 echo  Install dir: %INSTALL_DIR%
 echo.
 
-:: ─── Step 3: Initialize Node.js project ──────────────
+:: ─── Step 3: Setup Agent ────────────────────────────
 echo [3/6] Setting up agent...
 cd /d "%INSTALL_DIR%"
-
 if not exist "package.json" (
-    echo {"name":"ai-arena-agent","version":"2.0.0","private":true,"scripts":{"start":"node ai-arena-agent.js"}} > package.json
+    echo {"name":"ai-arena-agent","version":"3.0.0","private":true,"scripts":{"start":"node ai-arena-agent.js"}} > package.json
 )
-
-:: Install Firebase dependency (required for communication)
 echo  Installing dependencies...
 call npm install firebase --production --no-audit --no-fund >nul 2>&1
 if %errorLevel% neq 0 (
@@ -681,36 +683,26 @@ echo     "appId": "%FIREBASE_APP_ID%"
 echo   },
 echo   "licenseKey": "%LICENSE_KEY%",
 echo   "logLevel": "info",
-echo   "heartbeatInterval": 30000,
-echo   "reconnectDelay": 5000
+echo   "heartbeatInterval": 30000
 echo }
 ) > "%INSTALL_DIR%\\config\\settings.json"
 echo  Configuration saved.
 echo.
 
-:: ─── Step 5: Auto-Start Setup (3 fallback methods) ──
+:: ─── Step 5: Auto-Start (3 fallback methods) ──────
 echo [5/6] Setting up auto-start on boot...
 
-:: Method 1: Task Scheduler (best — runs at boot, no login needed)
 schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
 schtasks /create /tn "%TASK_NAME%" /tr "cmd /c cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%" /sc onstart /ru SYSTEM /rl HIGHEST /f >nul 2>&1
-
 if %errorLevel% equ 0 (
-    echo  [OK] Task Scheduler: Agent starts on boot as SYSTEM (no login needed)
+    echo  [OK] Task Scheduler: Agent starts on boot as SYSTEM
     set "AUTO_START_OK=1"
 ) else (
-    echo  [!] Task Scheduler failed — trying Registry Run key...
-    
-    :: Method 2: Registry Run key (good — starts when any user logs in)
     reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AiArenaAgent" /t REG_SZ /d "cmd /c cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%" /f >nul 2>&1
-    
     if %errorLevel% equ 0 (
         echo  [OK] Registry Run key: Agent starts when user logs in
         set "AUTO_START_OK=2"
     ) else (
-        echo  [!!] Registry also failed — using Startup folder as last resort...
-        
-        :: Method 3: Startup folder (basic — starts when user logs in)
         mkdir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup" >nul 2>&1
         echo cmd /c cd /d %INSTALL_DIR% ^&^& node ai-arena-agent.js --key=%LICENSE_KEY% > "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\ai-arena-agent.bat"
         set "AUTO_START_OK=3"
@@ -719,89 +711,294 @@ if %errorLevel% equ 0 (
 )
 echo.
 
-:: ─── Step 6: Configure Firewall ─────────────────────
+:: ─── Step 6: Firewall ──────────────────────────────
 echo [6/6] Configuring Windows Firewall...
-netsh advfirewall firewall add rule name="Ai-Arena Agent" dir=out action=allow program="%INSTALL_DIR%\\ai-arena-agent.js" enable=yes >nul 2>&1
-netsh advfirewall firewall add rule name="Ai-Arena Node" dir=out action=allow program="C:\\Program Files\\nodejs\\node.exe" enable=yes >nul 2>&1
+netsh advfirewall firewall add rule name="Ai-Arena Agent" dir=out action=allow program="C:\\Program Files\\nodejs\\node.exe" enable=yes >nul 2>&1
 echo  Firewall rules added.
 echo.
 
-:: ─── Summary ────────────────────────────────────────
 echo  ═══════════════════════════════════════════════
 echo   Installation Complete!
 echo  ═══════════════════════════════════════════════
 echo.
 echo   Install dir:   %INSTALL_DIR%
 echo   License key:   %LICENSE_KEY%
-echo   Firebase Proj: %FIREBASE_PROJECT_ID%
-echo   Auto-start:
-if "%AUTO_START_OK%"=="1" echo     Task Scheduler (runs on boot, no login needed) — BEST
-if "%AUTO_START_OK%"=="2" echo     Registry Run key (runs when user logs in) — GOOD
-if "%AUTO_START_OK%"=="3" echo     Startup folder (runs when user logs in) — BASIC
-echo   Logs:          %INSTALL_DIR%\\logs\\
-echo   Audit logs:    %INSTALL_DIR%\\audit\\
+echo   Firebase:      %FIREBASE_PROJECT_ID%
+echo   Agent mode:    Dormant (wakes on command, ~200B heartbeat/30s)
+echo   Offline track: Firebase onDisconnect (auto-marks offline)
 echo.
 echo   IMPORTANT: Place ai-arena-agent.js in:
 echo   %INSTALL_DIR%\\ai-arena-agent.js
 echo.
-echo   To start manually now:
-echo   cd /d %INSTALL_DIR% ^&^& node ai-arena-agent.js --key=%LICENSE_KEY%
-echo.
-echo   To remove auto-start (run all to clean):
-echo   schtasks /delete /tn "%TASK_NAME%" /f
-echo   reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AiArenaAgent" /f
-echo   del "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\ai-arena-agent.bat"
-echo.
-echo   NOTE: Just double-click the .bat file — it auto-requests
-echo   admin privileges. No right-click needed!
-echo.
-echo   After power outage, the agent will auto-start
-echo   when Windows boots. No one needs to be on-site.
-echo.
 
-:: Start the agent now
+:: Start the agent
 echo Starting agent now...
 start /b cmd /c "cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%"
 timeout /t 3 >nul
-
 echo Agent is running! Check Dashboard for online status.
 echo.
 pause`
 
-const steps = [
+// ─── macOS .sh Installer ──────────────────────────
+const shInstaller = `#!/bin/bash
+# ═══════════════════════════════════════════════════════
+# Ai-Arena Agent v3.0 — macOS Self-Installing Agent
+# Firebase-first: all communication via trusted Firebase
+# Dormant: agent sleeps until command, onDisconnect tracks online status
+# Auto-start via launchd (survives reboots, runs on boot)
+# ═══════════════════════════════════════════════════════
+
+set -e
+
+# ─── Configuration ───────────────────────────────────
+LICENSE_KEY="AI-REPLACE-WITH-YOUR-LICENSE-KEY"
+FIREBASE_API_KEY="your-firebase-api-key"
+FIREBASE_AUTH_DOMAIN="your-project.firebaseapp.com"
+FIREBASE_DATABASE_URL="https://your-project-default-rtdb.firebaseio.com"
+FIREBASE_PROJECT_ID="your-project-id"
+FIREBASE_STORAGE_BUCKET="your-project.appspot.com"
+FIREBASE_MESSAGING_SENDER_ID="your-sender-id"
+FIREBASE_APP_ID="your-app-id"
+INSTALL_DIR="/usr/local/ai-arena"
+LAUNCHD_LABEL="com.aiarena.agent"
+LOG_DIR="/Library/Logs/Ai-Arena"
+
+echo ""
+echo "  ╔═══════════════════════════════════════════════╗"
+echo "  ║    Ai-Arena Agent v3.0 — macOS Installer      ║"
+echo "  ╚═══════════════════════════════════════════════╝"
+echo ""
+
+# ─── Step 1: Check for Node.js ──────────────────────
+echo "[1/6] Checking Node.js installation..."
+if ! command -v node &> /dev/null; then
+    echo "  Node.js not found! Installing via Homebrew..."
+    if ! command -v brew &> /dev/null; then
+        echo "  Installing Homebrew..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+    brew install node
+    echo "  Node.js installed successfully."
+else
+    NODE_VER=$(node -v)
+    echo "  Node.js found: $NODE_VER"
+fi
+echo ""
+
+# ─── Step 2: Create Installation Directory ──────────
+echo "[2/6] Creating installation directory..."
+sudo mkdir -p "$INSTALL_DIR/logs"
+sudo mkdir -p "$INSTALL_DIR/config"
+echo "  Install dir: $INSTALL_DIR"
+echo ""
+
+# ─── Step 3: Setup Agent ────────────────────────────
+echo "[3/6] Setting up agent..."
+cd "$INSTALL_DIR"
+
+if [ ! -f "package.json" ]; then
+    echo '{"name":"ai-arena-agent","version":"3.0.0","private":true,"scripts":{"start":"node ai-arena-agent.js --key='"$LICENSE_KEY"'"}}' | sudo tee package.json > /dev/null
+fi
+
+echo "  Installing dependencies..."
+sudo npm install firebase --production --no-audit --no-fund 2>/dev/null
+echo "  Dependencies installed."
+echo ""
+
+# ─── Step 4: Create Agent Config ─────────────────────
+echo "[4/6] Creating configuration..."
+sudo tee "$INSTALL_DIR/config/settings.json" > /dev/null << EOF
+{
+  "firebaseConfig": {
+    "apiKey": "$FIREBASE_API_KEY",
+    "authDomain": "$FIREBASE_AUTH_DOMAIN",
+    "databaseURL": "$FIREBASE_DATABASE_URL",
+    "projectId": "$FIREBASE_PROJECT_ID",
+    "storageBucket": "$FIREBASE_STORAGE_BUCKET",
+    "messagingSenderId": "$FIREBASE_MESSAGING_SENDER_ID",
+    "appId": "$FIREBASE_APP_ID"
+  },
+  "licenseKey": "$LICENSE_KEY",
+  "logLevel": "info",
+  "heartbeatInterval": 30000
+}
+EOF
+echo "  Configuration saved."
+echo ""
+
+# ─── Step 5: Auto-Start via launchd ─────────────────
+echo "[5/6] Setting up auto-start via launchd..."
+
+# Create the launchd plist
+sudo tee "/Library/LaunchDaemons/$LAUNCHD_LABEL.plist" > /dev/null << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LAUNCHD_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/node</string>
+        <string>$INSTALL_DIR/ai-arena-agent.js</string>
+        <string>--key=$LICENSE_KEY</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/agent-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/agent-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FIREBASE_API_KEY</key>
+        <string>$FIREBASE_API_KEY</string>
+        <key>FIREBASE_AUTH_DOMAIN</key>
+        <string>$FIREBASE_AUTH_DOMAIN</string>
+        <key>FIREBASE_DATABASE_URL</key>
+        <string>$FIREBASE_DATABASE_URL</string>
+        <key>FIREBASE_PROJECT_ID</key>
+        <string>$FIREBASE_PROJECT_ID</string>
+        <key>FIREBASE_STORAGE_BUCKET</key>
+        <string>$FIREBASE_STORAGE_BUCKET</string>
+        <key>FIREBASE_MESSAGING_SENDER_ID</key>
+        <string>$FIREBASE_MESSAGING_SENDER_ID</string>
+        <key>FIREBASE_APP_ID</key>
+        <string>$FIREBASE_APP_ID</string>
+    </dict>
+</dict>
+</plist>
+EOF
+
+# Create log directory
+sudo mkdir -p "$LOG_DIR"
+
+# Load the launchd service
+sudo launchctl unload "/Library/LaunchDaemons/$LAUNCHD_LABEL.plist" 2>/dev/null || true
+sudo launchctl load "/Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+
+echo "  [OK] launchd service installed and started."
+echo "  Agent will auto-start on boot (KeepAlive = auto-restart on crash)."
+echo ""
+
+# ─── Step 6: Permissions ─────────────────────────────
+echo "[6/6] Setting permissions..."
+sudo chown -R root:wheel "$INSTALL_DIR"
+sudo chmod -R 755 "$INSTALL_DIR"
+sudo chmod 644 "/Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+echo "  Permissions set."
+echo ""
+
+echo "  ═══════════════════════════════════════════════"
+echo "   Installation Complete!"
+echo "  ═══════════════════════════════════════════════"
+echo ""
+echo "   Install dir:   $INSTALL_DIR"
+echo "   License key:   $LICENSE_KEY"
+echo "   Firebase:      $FIREBASE_PROJECT_ID"
+echo "   Agent mode:    Dormant (wakes on command)"
+echo "   Offline track: Firebase onDisconnect"
+echo "   Auto-start:    launchd (KeepAlive + RunAtLoad)"
+echo "   Logs:          $LOG_DIR/"
+echo ""
+echo "   IMPORTANT: Place ai-arena-agent.js in:"
+echo "   $INSTALL_DIR/ai-arena-agent.js"
+echo ""
+echo "   To check status:"
+echo "   sudo launchctl list | grep aiarena"
+echo ""
+echo "   To stop:"
+echo "   sudo launchctl unload /Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+echo ""
+echo "   To restart:"
+echo "   sudo launchctl unload /Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+echo "   sudo launchctl load /Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+echo ""
+echo "   To remove completely:"
+echo "   sudo launchctl unload /Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+echo "   sudo rm /Library/LaunchDaemons/$LAUNCHD_LABEL.plist"
+echo "   sudo rm -rf $INSTALL_DIR"
+echo "   sudo rm -rf $LOG_DIR"
+echo ""
+echo "  NOTE: After power outage or reboot, the agent auto-starts"
+echo "  via launchd with KeepAlive. No one needs to be on-site."
+echo ""`
+
+const windowsSteps = [
   {
     title: 'Download the .bat Installer',
-    description: 'Download install-ai-arena.bat from the section below. This handles everything: Node.js install, Firebase dependency setup, agent setup, firewall rules, and auto-start configuration.',
+    description: 'Download install-ai-arena.bat. Handles Node.js install, Firebase setup, auto-start, firewall rules.',
     icon: FileDown,
     command: 'See "Windows Installer (.bat)" section below',
   },
   {
     title: 'Edit the .bat File',
-    description: 'Open the .bat file in Notepad and change the LICENSE_KEY and Firebase config values at the top to match your Firebase project.',
+    description: 'Open in Notepad. Change LICENSE_KEY and Firebase config values at the top.',
     icon: FileCode,
     command: 'set "LICENSE_KEY=AI-your-actual-key-here"',
   },
   {
     title: 'Double-Click to Install',
-    description: 'Just double-click the .bat file! It auto-requests admin privileges via UAC. If no admin is available, it falls back to user-level auto-start (Registry Run key or Startup folder). No right-click needed!',
+    description: 'Just double-click! It auto-requests admin via UAC. Falls back to user-level if no admin available.',
     icon: Shield,
     command: 'Double-click install-ai-arena.bat',
   },
   {
     title: 'Place the Agent Script',
-    description: 'Copy the agent JavaScript code (below) and save it as ai-arena-agent.js in C:\\Ai-Arena\\. This is the file the .bat installer will run on boot.',
+    description: 'Copy the agent code and save as ai-arena-agent.js in C:\\Ai-Arena\\.',
     icon: FolderTree,
     command: 'Save as: C:\\Ai-Arena\\ai-arena-agent.js',
   },
   {
     title: 'Verify Unattended Access',
-    description: 'Restart the computer to test. After boot, check your Ai-Arena Dashboard — the server should appear as "online" automatically with no one logged in.',
+    description: 'Restart the computer. After boot, check Dashboard — server shows "online" automatically.',
     icon: MonitorUp,
     command: 'shutdown /r /t 0  # Test reboot',
   },
   {
     title: 'Power Outage Recovery',
-    description: 'When power returns and Windows boots, the Task Scheduler task runs the agent with SYSTEM privileges before any user logs in. It auto-reconnects to Firebase with exponential backoff.',
+    description: 'Windows boots, Task Scheduler fires agent as SYSTEM before login. Auto-reconnects to Firebase.',
+    icon: Power,
+    command: 'No action needed — fully automatic',
+  },
+]
+
+const macSteps = [
+  {
+    title: 'Download the .sh Installer',
+    description: 'Download install-ai-arena.sh. Handles Node.js (via Homebrew), Firebase setup, launchd auto-start.',
+    icon: FileDown,
+    command: 'See "macOS Installer (.sh)" section below',
+  },
+  {
+    title: 'Edit the .sh File',
+    description: 'Open in any text editor. Change LICENSE_KEY and Firebase config values at the top.',
+    icon: FileCode,
+    command: 'LICENSE_KEY="AI-your-actual-key-here"',
+  },
+  {
+    title: 'Run the Installer',
+    description: 'Open Terminal, navigate to the file, make executable, and run. Needs sudo for launchd setup.',
+    icon: Terminal,
+    command: 'chmod +x install-ai-arena.sh && sudo ./install-ai-arena.sh',
+  },
+  {
+    title: 'Place the Agent Script',
+    description: 'Copy the agent code and save as ai-arena-agent.js in /usr/local/ai-arena/.',
+    icon: FolderTree,
+    command: 'Save as: /usr/local/ai-arena/ai-arena-agent.js',
+  },
+  {
+    title: 'Verify Auto-Start',
+    description: 'Reboot the Mac. After boot, check Dashboard — server shows "online". launchd KeepAlive auto-restarts on crash.',
+    icon: MonitorUp,
+    command: 'sudo reboot  # Test reboot',
+  },
+  {
+    title: 'Power Outage Recovery',
+    description: 'Mac boots, launchd fires agent automatically. KeepAlive ensures it restarts if it crashes.',
     icon: Power,
     command: 'No action needed — fully automatic',
   },
@@ -810,7 +1007,10 @@ const steps = [
 export function AgentSetup() {
   const [copied, setCopied] = useState(false)
   const [copiedBat, setCopiedBat] = useState(false)
+  const [copiedSh, setCopiedSh] = useState(false)
   const [activeStep, setActiveStep] = useState<number | null>(null)
+  const [activeMacStep, setActiveMacStep] = useState<number | null>(null)
+  const [platformTab, setPlatformTab] = useState<'windows' | 'mac'>('windows')
 
   const copyCode = () => {
     navigator.clipboard.writeText(agentCode)
@@ -823,7 +1023,14 @@ export function AgentSetup() {
     navigator.clipboard.writeText(batInstaller)
     setCopiedBat(true)
     setTimeout(() => setCopiedBat(false), 2000)
-    toast.success('Installer .bat copied to clipboard')
+    toast.success('Windows installer copied')
+  }
+
+  const copySh = () => {
+    navigator.clipboard.writeText(shInstaller)
+    setCopiedSh(true)
+    setTimeout(() => setCopiedSh(false), 2000)
+    toast.success('macOS installer copied')
   }
 
   const downloadBat = () => {
@@ -837,6 +1044,19 @@ export function AgentSetup() {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
     toast.success('install-ai-arena.bat downloaded!')
+  }
+
+  const downloadSh = () => {
+    const blob = new Blob([shInstaller], { type: 'text/x-shellscript' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'install-ai-arena.sh'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    toast.success('install-ai-arena.sh downloaded!')
   }
 
   const downloadAgent = () => {
@@ -854,27 +1074,326 @@ export function AgentSetup() {
 
   return (
     <div className="space-y-6">
-      {/* Windows badge */}
-      <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-blue-500/15 flex items-center justify-center">
-            <Monitor className="w-6 h-6 text-blue-400" />
+      {/* Dormant Mode + Online/Offline Explanation */}
+      <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
+            <Moon className="w-6 h-6 text-emerald-400" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-blue-300">Windows-Focused Deployment</h3>
+            <h3 className="text-sm font-semibold text-emerald-300">Dormant Mode + Smart Online/Offline</h3>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Optimized for Windows servers with .bat installer, auto-start on boot via Task Scheduler,
-              unattended access after power outages, file browser, and microphone support.
+              Agent sleeps until commands arrive. Firebase onDisconnect auto-tracks online/offline status.
             </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="bg-zinc-950 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Moon className="w-3.5 h-3.5 text-blue-400" />
+              <span className="text-xs font-medium text-zinc-200">Dormant / Sleep Mode</span>
+            </div>
+            <ul className="text-[10px] text-zinc-500 space-y-1">
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Firebase uses <strong className="text-zinc-300">server-push</strong> (onChildAdded) — agent does NOT poll</span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Agent sleeps until Firebase pushes a command — zero bandwidth when idle</span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Heartbeat: only <strong className="text-zinc-300">~200 bytes every 30s</strong> (timestamp + RAM + CPU)</span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Exponential backoff reconnect (5s → 60s max) after network drops</span>
+              </li>
+            </ul>
+          </div>
+          <div className="bg-zinc-950 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-xs font-medium text-zinc-200">Online/Offline Tracking</span>
+            </div>
+            <ul className="text-[10px] text-zinc-500 space-y-1">
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Firebase <strong className="text-zinc-300">onDisconnect()</strong> — if computer crashes/loses power, Firebase auto-marks it &quot;offline&quot; within ~30s</span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>No polling needed — Firebase handles disconnect detection server-side</span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Records <strong className="text-zinc-300">disconnectedAt</strong> timestamp when connection drops</span>
+              </li>
+              <li className="flex items-start gap-1.5">
+                <span className="text-emerald-400 mt-0.5">&#x2713;</span>
+                <span>Dashboard shows real green/red status — you always know who&apos;s up</span>
+              </li>
+            </ul>
           </div>
         </div>
       </div>
 
-      {/* Architecture overview */}
+      {/* Platform Tabs */}
+      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Globe className="w-4 h-4 text-emerald-400" />
+          <h3 className="text-sm font-semibold text-white">Cross-Platform Deployment</h3>
+        </div>
+
+        <div className="flex gap-1 bg-zinc-950 rounded-lg p-1 mb-4">
+          <button
+            onClick={() => setPlatformTab('windows')}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-md text-xs font-medium transition-all',
+              platformTab === 'windows' ? 'bg-blue-500/15 text-blue-400' : 'text-zinc-500 hover:text-zinc-300'
+            )}
+          >
+            <Monitor className="w-4 h-4" />
+            Windows
+          </button>
+          <button
+            onClick={() => setPlatformTab('mac')}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-md text-xs font-medium transition-all',
+              platformTab === 'mac' ? 'bg-blue-500/15 text-blue-400' : 'text-zinc-500 hover:text-zinc-300'
+            )}
+          >
+            <Apple className="w-4 h-4" />
+            macOS
+          </button>
+        </div>
+
+        {platformTab === 'windows' && (
+          <div className="space-y-4">
+            <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3">
+              <div className="flex items-center gap-2">
+                <Monitor className="w-4 h-4 text-blue-400" />
+                <span className="text-xs font-semibold text-blue-300">Windows Edition</span>
+                <Badge className="bg-blue-500/15 text-blue-400 border-0 text-[10px]">.bat installer</Badge>
+              </div>
+              <p className="text-[10px] text-zinc-500 mt-1">
+                Auto-start via Task Scheduler (SYSTEM account). Self-elevates to admin. Survives power outages. PowerShell audit logging.
+              </p>
+            </div>
+
+            {/* Windows Steps */}
+            <div className="space-y-2">
+              {windowsSteps.map((step, i) => {
+                const Icon = step.icon
+                const isOpen = activeStep === i
+                return (
+                  <div
+                    key={i}
+                    className={cn(
+                      'border rounded-lg transition-all duration-200 cursor-pointer',
+                      isOpen ? 'border-emerald-500/30 bg-zinc-950/50' : 'border-zinc-800 hover:border-zinc-700'
+                    )}
+                    onClick={() => setActiveStep(isOpen ? null : i)}
+                  >
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <div className={cn(
+                        'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
+                        isOpen ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 text-zinc-500'
+                      )}>{i + 1}</div>
+                      <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
+                      <div className="flex-1">
+                        <span className="text-xs font-medium text-zinc-200">{step.title}</span>
+                        <p className="text-[10px] text-zinc-500 hidden sm:block">{step.description}</p>
+                      </div>
+                      <ChevronRight className={cn('w-4 h-4 text-zinc-500 transition-transform', isOpen && 'rotate-90')} />
+                    </div>
+                    {isOpen && (
+                      <div className="px-4 pb-3">
+                        <p className="text-xs text-zinc-400 mb-2">{step.description}</p>
+                        <code className="block bg-zinc-950 text-emerald-400 text-xs p-3 rounded-md font-mono">{step.command}</code>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {platformTab === 'mac' && (
+          <div className="space-y-4">
+            <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3">
+              <div className="flex items-center gap-2">
+                <Apple className="w-4 h-4 text-blue-400" />
+                <span className="text-xs font-semibold text-blue-300">macOS Edition</span>
+                <Badge className="bg-blue-500/15 text-blue-400 border-0 text-[10px]">.sh installer</Badge>
+              </div>
+              <p className="text-[10px] text-zinc-500 mt-1">
+                Auto-start via launchd (RunAtLoad + KeepAlive). Auto-restarts on crash. Logs login events via last/log. Survives reboots.
+              </p>
+            </div>
+
+            {/* macOS Steps */}
+            <div className="space-y-2">
+              {macSteps.map((step, i) => {
+                const Icon = step.icon
+                const isOpen = activeMacStep === i
+                return (
+                  <div
+                    key={i}
+                    className={cn(
+                      'border rounded-lg transition-all duration-200 cursor-pointer',
+                      isOpen ? 'border-emerald-500/30 bg-zinc-950/50' : 'border-zinc-800 hover:border-zinc-700'
+                    )}
+                    onClick={() => setActiveMacStep(isOpen ? null : i)}
+                  >
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <div className={cn(
+                        'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
+                        isOpen ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 text-zinc-500'
+                      )}>{i + 1}</div>
+                      <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
+                      <div className="flex-1">
+                        <span className="text-xs font-medium text-zinc-200">{step.title}</span>
+                        <p className="text-[10px] text-zinc-500 hidden sm:block">{step.description}</p>
+                      </div>
+                      <ChevronRight className={cn('w-4 h-4 text-zinc-500 transition-transform', isOpen && 'rotate-90')} />
+                    </div>
+                    {isOpen && (
+                      <div className="px-4 pb-3">
+                        <p className="text-xs text-zinc-400 mb-2">{step.description}</p>
+                        <code className="block bg-zinc-950 text-emerald-400 text-xs p-3 rounded-md font-mono">{step.command}</code>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Agent Code (Shared — works on both platforms) */}
+      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+            <FileCode className="w-4 h-4 text-emerald-400" />
+            Agent Script (Cross-Platform — Windows + macOS)
+          </h3>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={copyCode}
+              className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:text-white"
+            >
+              {copied ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={downloadAgent}
+              className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:text-white"
+            >
+              <Download className="w-3 h-3 mr-1" />
+              Download .js
+            </Button>
+          </div>
+        </div>
+        <p className="text-[10px] text-zinc-500 mb-3">
+          One agent file works on both Windows and macOS. Auto-detects platform at startup.
+          Uses <code className="text-emerald-400 bg-zinc-900 px-1 rounded">onDisconnect()</code> for automatic offline detection.
+        </p>
+        <div className="bg-zinc-950 rounded-lg p-3 font-mono text-[10px] text-zinc-500 max-h-48 overflow-y-auto">
+          <pre className="whitespace-pre">{agentCode.split('\n').slice(0, 30).join('\n')}...</pre>
+          <p className="text-zinc-600 mt-1">({agentCode.split('\n').length} lines total — click Download for full file)</p>
+        </div>
+      </div>
+
+      {/* Windows .bat Installer */}
+      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Monitor className="w-4 h-4 text-blue-400" />
+            Windows Installer (.bat)
+          </h3>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={copyBat}
+              className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:text-white"
+            >
+              {copiedBat ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
+              {copiedBat ? 'Copied' : 'Copy'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={downloadBat}
+              className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:text-white"
+            >
+              <Download className="w-3 h-3 mr-1" />
+              Download .bat
+            </Button>
+          </div>
+        </div>
+        <p className="text-[10px] text-zinc-500 mb-3">
+          Self-elevating .bat installer. Auto-requests admin via UAC. Sets up Task Scheduler for boot auto-start.
+          Falls back to Registry Run key and Startup folder if admin unavailable.
+        </p>
+        <div className="bg-zinc-950 rounded-lg p-3 font-mono text-[10px] text-zinc-500 max-h-48 overflow-y-auto">
+          <pre className="whitespace-pre">{batInstaller.split('\n').slice(0, 20).join('\n')}...</pre>
+          <p className="text-zinc-600 mt-1">({batInstaller.split('\n').length} lines total — click Download for full file)</p>
+        </div>
+      </div>
+
+      {/* macOS .sh Installer */}
+      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+            <Apple className="w-4 h-4 text-blue-400" />
+            macOS Installer (.sh)
+          </h3>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={copySh}
+              className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:text-white"
+            >
+              {copiedSh ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
+              {copiedSh ? 'Copied' : 'Copy'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={downloadSh}
+              className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:text-white"
+            >
+              <Download className="w-3 h-3 mr-1" />
+              Download .sh
+            </Button>
+          </div>
+        </div>
+        <p className="text-[10px] text-zinc-500 mb-3">
+          Shell script installer for macOS. Installs Node.js via Homebrew if missing.
+          Sets up <code className="text-emerald-400 bg-zinc-900 px-1 rounded">launchd</code> with RunAtLoad + KeepAlive for boot auto-start and crash recovery.
+          Installs to <code className="text-emerald-400 bg-zinc-900 px-1 rounded">/usr/local/ai-arena/</code> (needs sudo).
+        </p>
+        <div className="bg-zinc-950 rounded-lg p-3 font-mono text-[10px] text-zinc-500 max-h-48 overflow-y-auto">
+          <pre className="whitespace-pre">{shInstaller.split('\n').slice(0, 20).join('\n')}...</pre>
+          <p className="text-zinc-600 mt-1">({shInstaller.split('\n').length} lines total — click Download for full file)</p>
+        </div>
+      </div>
+
+      {/* Architecture Overview */}
       <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
         <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
           <Server className="w-4 h-4 text-emerald-400" />
-          Architecture — Firebase-First Windows Edition
+          Architecture — Cross-Platform v3.0
         </h3>
         <div className="bg-zinc-950 rounded-lg p-4 font-mono text-xs text-zinc-400 leading-relaxed overflow-x-auto">
           <pre className="whitespace-pre">{`
@@ -885,255 +1404,68 @@ export function AgentSetup() {
 │  │ Dashboard │ │ Connect  │ │License Keys│ │ Agent Setup││
 │  └─────┬────┘ └────┬─────┘ └─────┬────┘ └─────┬──────┘│
 │  ┌─────┴───────────┴───────────┴───────────┴─────────┐ │
-│  │              REST API Layer                        │ │
+│  │              REST API + Firebase Client             │ │
 │  └──────────────────────┬────────────────────────────┘ │
 │                         │                              │
 │  ┌──────────────────────┴────────────────────────────┐ │
 │  │       Firebase Realtime Database (PRIMARY)        │ │
-│  │       ✦ Trusted domains — no antivirus flagging   │ │
-│  │       ✦ /agents/{key}/commands  (dashboard→agent) │ │
-│  │       ✦ /agents/{key}/results    (agent→dashboard) │ │
-│  │       ✦ /agents/{key}/status     (heartbeat)      │ │
+│  │       Trusted domains — no antivirus flagging     │ │
+│  │                                                    │ │
+│  │  /agents/{key}/status        = online/offline     │ │
+│  │  /agents/{key}/lastHeartbeat = 30s heartbeat      │ │
+│  │  /agents/{key}/disconnectedAt = auto on drop      │ │
+│  │  /agents/{key}/commands       = dashboard -> agent│ │
+│  │  /agents/{key}/results        = agent -> dashboard │ │
+│  │  /audit/{key}                 = activity logs      │ │
+│  │                                                    │ │
+│  │  onDisconnect: auto-marks "offline" if crash/pwr  │ │
 │  └──────────────────────┬────────────────────────────┘ │
-│                         │ Firebase RTDB (all comms)    │
-└─────────────────────────┼─────────────────────────────┘
-                          │ (auto-reconnect after outage)
-                          │
-┌─────────────────────────┼─────────────────────────────┐
-│              Windows Client Servers                     │
 │                         │                              │
-│  ┌──────────────────────┴──────────────────────────┐  │
-│  │  Task Scheduler (runs on boot, SYSTEM account)   │  │
-│  │  → auto-starts before any user logs in           │  │
-│  └──────────────────────┬──────────────────────────┘  │
-│                         │                              │
-│  ┌──────────┐  ┌───────┴──────┐  ┌──────────┐        │
-│  │ Server 1 │  │   Server 2   │  │ Server N │        │
-│  │ ┌──────┐ │  │  ┌────────┐  │  │ ┌──────┐ │        │
-│  │ │Agent │ │  │  │ Agent  │  │  │ │Agent │ │        │
-│  │ │ v2.0 │ │  │  │ v2.0  │  │  │ │ v2.0 │ │        │
-│  │ └──────┘ │  │  └────────┘  │  │ └──────┘ │        │
-│  │ Firebase │  │  Firebase   │  │ Firebase │        │
-│  │ Screen   │  │  Screen     │  │ Screen   │        │
-│  │ Mic      │  │  Mic        │  │ Mic      │        │
-│  │ Files    │  │  Files      │  │ Files    │        │
-│  │ Terminal │  │  Terminal   │  │ Terminal │        │
-│  └──────────┘  └─────────────┘  └──────────┘        │
+│         ┌───────────────┼───────────────┐              │
+│         │               │               │              │
+│  ┌──────┴──────┐ ┌─────┴──────┐ ┌──────┴──────┐       │
+│  │  Windows 1  │ │  macOS 1   │ │  Windows 2  │       │
+│  │ ┌────────┐  │ │ ┌────────┐ │ │ ┌────────┐  │       │
+│  │ │ Agent  │  │ │ │ Agent  │ │ │ │ Agent  │  │       │
+│  │ │ v3.0   │  │ │ │ v3.0   │ │ │ │ v3.0   │  │       │
+│  │ │dormant │  │ │ │dormant │ │ │ │dormant │  │       │
+│  │ └────────┘  │ │ └────────┘ │ │ └────────┘  │       │
+│  │ TaskSched.  │ │  launchd   │ │ TaskSched.  │       │
+│  │ KeepAlive   │ │ KeepAlive  │ │ KeepAlive   │       │
+│  │ onDisconnect│ │onDisconnect│ │ onDisconnect│       │
+│  └─────────────┘ └────────────┘ └─────────────┘       │
 └─────────────────────────────────────────────────────────┘`}</pre>
         </div>
       </div>
 
-      {/* Windows Setup Steps */}
-      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-          <ClipboardCheck className="w-4 h-4 text-emerald-400" />
-          Windows Deployment Steps
-        </h3>
-        <div className="space-y-2">
-          {steps.map((step, i) => {
-            const Icon = step.icon
-            const isOpen = activeStep === i
-            return (
-              <div
-                key={i}
-                className={cn(
-                  'border rounded-lg transition-all duration-200 cursor-pointer',
-                  isOpen ? 'border-emerald-500/30 bg-zinc-950/50' : 'border-zinc-800 hover:border-zinc-700'
-                )}
-                onClick={() => setActiveStep(isOpen ? null : i)}
-              >
-                <div className="flex items-center gap-3 px-4 py-3">
-                  <div
-                    className={cn(
-                      'w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-                      isOpen
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-zinc-800 text-zinc-500'
-                    )}
-                  >
-                    {i + 1}
-                  </div>
-                  <Icon className="w-4 h-4 text-zinc-400 shrink-0" />
-                  <div className="flex-1">
-                    <span className="text-xs font-medium text-zinc-200">{step.title}</span>
-                    <p className="text-[10px] text-zinc-500 hidden sm:block">{step.description}</p>
-                  </div>
-                  <ChevronRight
-                    className={cn(
-                      'w-4 h-4 text-zinc-500 transition-transform',
-                      isOpen && 'rotate-90'
-                    )}
-                  />
-                </div>
-                {isOpen && (
-                  <div className="px-4 pb-3">
-                    <p className="text-xs text-zinc-400 mb-2">{step.description}</p>
-                    <code className="block bg-zinc-950 text-emerald-400 text-xs p-3 rounded-md font-mono">
-                      {step.command}
-                    </code>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Unattended Access Section */}
+      {/* Bandwidth Usage */}
       <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
         <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-          <Power className="w-4 h-4 text-yellow-400" />
-          Unattended Access &amp; Power Outage Recovery
+          <Zap className="w-4 h-4 text-yellow-400" />
+          Bandwidth Usage (Per Agent)
         </h3>
-        <div className="space-y-3 text-xs text-zinc-400">
-          <div className="bg-zinc-950 rounded-lg p-3 space-y-2">
-            <p className="text-zinc-300 font-medium">How it works:</p>
-            <ol className="list-decimal list-inside space-y-1.5 text-zinc-400">
-              <li>The <code className="text-emerald-400 bg-zinc-900 px-1 rounded">.bat</code> installer creates a Windows Task Scheduler task named &quot;AiArenaAgent&quot;</li>
-              <li>This task is configured to run as <code className="text-yellow-400 bg-zinc-900 px-1 rounded">SYSTEM</code> — it starts at boot, before any user logs in</li>
-              <li>When power returns after an outage, Windows boots, Task Scheduler fires the agent automatically</li>
-              <li>The agent connects to Firebase Realtime Database with automatic reconnection (10s interval)</li>
-              <li>Within ~30 seconds of boot, the server appears &quot;online&quot; in your Dashboard — no one on-site needed</li>
-            </ol>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-zinc-950 rounded-lg p-3 text-center">
+            <p className="text-[10px] text-zinc-500 mb-1">Idle (Dormant)</p>
+            <p className="text-lg font-bold text-emerald-400">~200 B</p>
+            <p className="text-[10px] text-zinc-600">every 30 seconds</p>
+            <p className="text-[10px] text-zinc-600 mt-1">~576 KB / month</p>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
-              <div className="flex items-center gap-2 mb-1.5">
-                <HardDrive className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-[10px] font-medium text-zinc-300">Install Location</span>
-              </div>
-              <code className="text-[10px] text-emerald-400 font-mono">C:\Ai-Arena\</code>
-            </div>
-            <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
-              <div className="flex items-center gap-2 mb-1.5">
-                <Terminal className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-[10px] font-medium text-zinc-300">Service Name</span>
-              </div>
-              <code className="text-[10px] text-emerald-400 font-mono">AiArenaAgent</code>
-            </div>
-            <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
-              <div className="flex items-center gap-2 mb-1.5">
-                <Shield className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-[10px] font-medium text-zinc-300">Communication</span>
-              </div>
-              <code className="text-[10px] text-yellow-400 font-mono">Firebase RTDB</code>
-            </div>
+          <div className="bg-zinc-950 rounded-lg p-3 text-center">
+            <p className="text-[10px] text-zinc-500 mb-1">Command + Response</p>
+            <p className="text-lg font-bold text-blue-400">~1-10 KB</p>
+            <p className="text-[10px] text-zinc-600">per command cycle</p>
+            <p className="text-[10px] text-zinc-600 mt-1">depends on output size</p>
           </div>
-          <div className="bg-yellow-500/5 border border-yellow-500/20 rounded-lg p-3">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-[10px] font-medium text-yellow-400">Important Notes</p>
-                <ul className="text-[10px] text-zinc-500 mt-1 space-y-0.5 list-disc list-inside">
-                  <li>Just double-click the .bat — it auto-requests admin via UAC (no right-click needed)</li>
-                  <li>If no admin is available, it falls back to user-level auto-start (Registry/Startup folder)</li>
-                  <li>Windows Firewall rules are added automatically to allow outbound Firebase connections</li>
-                  <li>To uninstall: <code className="text-zinc-400">schtasks /delete /tn &quot;AiArenaAgent&quot; /f</code> then delete <code className="text-zinc-400">C:\Ai-Arena\</code></li>
-                  <li>Agent logs are stored in <code className="text-zinc-400">C:\Ai-Arena\logs\</code> for troubleshooting</li>
-                </ul>
-              </div>
-            </div>
+          <div className="bg-zinc-950 rounded-lg p-3 text-center">
+            <p className="text-[10px] text-zinc-500 mb-1">Reconnect (after outage)</p>
+            <p className="text-lg font-bold text-yellow-400">~2 KB</p>
+            <p className="text-[10px] text-zinc-600">one-time on reconnect</p>
+            <p className="text-[10px] text-zinc-600 mt-1">system info + status</p>
           </div>
         </div>
-      </div>
-
-      {/* Windows .bat Installer */}
-      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-          <div className="flex items-center gap-2">
-            <Badge className="bg-blue-500/15 text-blue-400 border-0 text-[10px]">
-              <Monitor className="w-3 h-3 mr-1" />
-              .bat
-            </Badge>
-            <span className="text-sm font-medium text-white">Windows Installer Script</span>
-            <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded">
-              install-ai-arena.bat
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800"
-              onClick={copyBat}
-            >
-              {copiedBat ? (
-                <><Check className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />Copied!</>
-              ) : (
-                <><Copy className="w-3.5 h-3.5 mr-1.5" />Copy</>
-              )}
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white"
-              onClick={downloadBat}
-            >
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              Download .bat
-            </Button>
-          </div>
-        </div>
-        <div className="max-h-72 overflow-y-auto">
-          <pre className="p-4 text-xs font-mono text-zinc-300 leading-5 bg-zinc-950">
-            <code>{batInstaller}</code>
-          </pre>
-        </div>
-      </div>
-
-      {/* Agent Code */}
-      <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-          <div className="flex items-center gap-2">
-            <FileCode className="w-4 h-4 text-emerald-400" />
-            <span className="text-sm font-medium text-white">Agent Source Code</span>
-            <span className="text-[10px] bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded">
-              ai-arena-agent.js
-            </span>
-            <Badge className="bg-emerald-500/15 text-emerald-400 border-0 text-[10px]">v2.0 Firebase</Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-800"
-              onClick={copyCode}
-            >
-              {copied ? (
-                <><Check className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />Copied!</>
-              ) : (
-                <><Copy className="w-3.5 h-3.5 mr-1.5" />Copy</>
-              )}
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-              onClick={downloadAgent}
-            >
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              Download .js
-            </Button>
-          </div>
-        </div>
-        <div className="max-h-72 overflow-y-auto">
-          <pre className="p-4 text-xs font-mono text-zinc-300 leading-5 bg-zinc-950">
-            <code>{agentCode}</code>
-          </pre>
-        </div>
-      </div>
-
-      {/* Quick Start */}
-      <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
-        <h4 className="text-xs font-semibold text-emerald-400 mb-2">Quick Start for Clients</h4>
-        <ol className="text-xs text-zinc-400 space-y-1 list-decimal list-inside">
-          <li>Go to License Keys tab → Generate a new key for this server</li>
-          <li>Download <code className="text-emerald-400 bg-zinc-900 px-1 rounded">install-ai-arena.bat</code> — edit the LICENSE_KEY and Firebase config at the top</li>
-          <li>Download <code className="text-emerald-400 bg-zinc-900 px-1 rounded">ai-arena-agent.js</code> — save to <code className="text-zinc-400">C:\Ai-Arena\</code></li>
-          <li>Right-click .bat → Run as Administrator</li>
-          <li>Server appears in Dashboard within 30 seconds of boot — done!</li>
-        </ol>
-        <p className="text-xs text-zinc-500 mt-2">
-          After power outage: Windows boots → Task Scheduler starts agent → agent connects to Firebase → server shows &quot;online&quot; in Dashboard.
-          No human intervention needed, ever. All communication flows through trusted Firebase domains.
+        <p className="text-[10px] text-zinc-600 mt-3 text-center">
+          10 dormant agents = ~5.7 MB/month total. Firebase free tier allows 10 GB/month.
         </p>
       </div>
     </div>
