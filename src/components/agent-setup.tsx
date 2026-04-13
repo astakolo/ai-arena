@@ -1527,5 +1527,4 @@ export function AgentSetup() {
   )
 }
 
-// Need to import KeyRound for the UI
-import { KeyRound } from 'lucide-react'
+
