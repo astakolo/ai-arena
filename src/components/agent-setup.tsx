@@ -1235,18 +1235,16 @@ function AccordionSection({ title, icon: Icon, description, badge, children, def
 }
 
 export function AgentSetup() {
-  const [serverUrl, setServerUrl] = useState('')
-  const [encKey, setEncKey] = useState('')
+  const [serverUrl, setServerUrl] = useState(() => {
+    if (typeof window !== 'undefined') return localStorage.getItem('arena_server_url') ?? ''
+    return ''
+  })
+  const [encKey, setEncKey] = useState(() => {
+    if (typeof window !== 'undefined') return localStorage.getItem('arena_enc_key') ?? ''
+    return ''
+  })
   const [licenseKey, setLicenseKey] = useState('')
   const [copiedField, setCopiedField] = useState<string | null>(null)
-
-  // Load saved config from localStorage
-  useEffect(() => {
-    const savedUrl = localStorage.getItem('arena_server_url')
-    const savedKey = localStorage.getItem('arena_enc_key')
-    if (savedUrl) setServerUrl(savedUrl)
-    if (savedKey) setEncKey(savedKey)
-  }, [])
 
   const handleCopy = (text: string, field: string) => {
     navigator.clipboard.writeText(text)
