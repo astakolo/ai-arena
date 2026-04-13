@@ -2,18 +2,18 @@
 
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { Server as ServerType, useRemoteHubStore } from '@/lib/store'
+import { useRemoteHubStore } from '@/lib/store'
 import {
   Plug,
   Unplug,
-  ChevronDown,
   KeyRound,
   Loader2,
   CheckCircle2,
-  XCircle,
   Monitor,
   Webcam,
   Terminal,
+  FolderOpen,
+  Mic,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -28,16 +28,26 @@ import {
 import { RemoteDesktop } from '@/components/remote-desktop'
 import { WebcamView } from '@/components/webcam-view'
 import { TerminalEmulator } from '@/components/terminal-emulator'
+import { FileBrowser } from '@/components/file-browser'
+import { MicrophoneView } from '@/components/microphone-view'
 import { toast } from 'sonner'
+
+type ToolTab = 'desktop' | 'webcam' | 'terminal' | 'files' | 'mic'
+
+const toolTabs: { id: ToolTab; label: string; icon: typeof Monitor }[] = [
+  { id: 'desktop', label: 'Desktop', icon: Monitor },
+  { id: 'webcam', label: 'Webcam', icon: Webcam },
+  { id: 'terminal', label: 'Terminal', icon: Terminal },
+  { id: 'files', label: 'Files', icon: FolderOpen },
+  { id: 'mic', label: 'Microphone', icon: Mic },
+]
 
 export function ConnectionPanel() {
   const { servers, selectedServer, setSelectedServer, isConnected, setConnected, setConnectionQuality } =
     useRemoteHubStore()
   const [licenseInput, setLicenseInput] = useState('')
   const [isVerifying, setIsVerifying] = useState(false)
-  const [showWebcam, setShowWebcam] = useState(true)
-  const [showTerminal, setShowTerminal] = useState(true)
-  const [activeTool, setActiveTool] = useState<'desktop' | 'webcam' | 'terminal'>('desktop')
+  const [activeTool, setActiveTool] = useState<ToolTab>('desktop')
 
   const handleSelectServer = (serverId: string) => {
     const server = servers.find((s) => s.id === serverId)
@@ -101,10 +111,6 @@ export function ConnectionPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'online' }),
       })
-
-      await fetch(`/api/servers/${selectedServer.id}/logs`, {
-        method: 'POST', // This won't work but we'll handle it gracefully
-      }).catch(() => {})
     } catch {
       // ignore
     }
@@ -112,6 +118,7 @@ export function ConnectionPanel() {
     setConnected(false)
     setSelectedServer(null)
     setLicenseInput('')
+    setActiveTool('desktop')
     toast.info('Disconnected from server')
   }
 
@@ -123,6 +130,19 @@ export function ConnectionPanel() {
           <div className="flex items-center gap-2 mb-1">
             <Plug className="w-4 h-4 text-emerald-400" />
             <h3 className="text-sm font-semibold text-white">Connect to Server</h3>
+          </div>
+
+          {/* Unattended access notice */}
+          <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[10px] font-medium text-emerald-400">Unattended Access Ready</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">
+                  Servers with the agent installed via the .bat installer will auto-start on boot after power outages. No one needs to be on-site.
+                </p>
+              </div>
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -220,27 +240,25 @@ export function ConnectionPanel() {
             </Button>
           </div>
 
-          {/* Tool tabs */}
-          <div className="flex gap-1 mt-3 bg-zinc-950 rounded-lg p-1">
-            {[
-              { id: 'desktop' as const, label: 'Desktop', icon: Monitor },
-              { id: 'webcam' as const, label: 'Webcam', icon: Webcam },
-              { id: 'terminal' as const, label: 'Terminal', icon: Terminal },
-            ].map((tool) => {
+          {/* Tool tabs - scrollable on mobile */}
+          <div className="flex gap-1 mt-3 bg-zinc-950 rounded-lg p-1 overflow-x-auto">
+            {toolTabs.map((tool) => {
               const Icon = tool.icon
               return (
                 <button
                   key={tool.id}
                   onClick={() => setActiveTool(tool.id)}
                   className={cn(
-                    'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-md text-xs font-medium transition-all',
+                    'flex items-center justify-center gap-1.5 py-2 px-3 rounded-md text-xs font-medium transition-all whitespace-nowrap shrink-0',
                     activeTool === tool.id
                       ? 'bg-emerald-500/15 text-emerald-400'
-                      : 'text-zinc-500 hover:text-zinc-300'
+                      : 'text-zinc-500 hover:text-zinc-300',
+                    // Desktop & webcam share space, terminal/files/mic fill
+                    tool.id === 'terminal' || tool.id === 'files' || tool.id === 'mic' ? 'flex-1 min-w-0' : 'flex-1 min-w-0'
                   )}
                 >
                   <Icon className="w-3.5 h-3.5" />
-                  {tool.label}
+                  <span className="hidden sm:inline">{tool.label}</span>
                 </button>
               )
             })}
@@ -251,7 +269,6 @@ export function ConnectionPanel() {
       {/* Connected Views */}
       {isConnected && (
         <div className="space-y-4">
-          {/* Desktop view (always visible) */}
           {activeTool === 'desktop' && (
             <RemoteDesktop
               isConnected={isConnected}
@@ -261,14 +278,20 @@ export function ConnectionPanel() {
             />
           )}
 
-          {/* Webcam view */}
           {activeTool === 'webcam' && (
             <WebcamView isConnected={isConnected} serverName={selectedServer?.name} />
           )}
 
-          {/* Terminal view */}
           {activeTool === 'terminal' && (
             <TerminalEmulator isConnected={isConnected} serverName={selectedServer?.hostname} />
+          )}
+
+          {activeTool === 'files' && (
+            <FileBrowser isConnected={isConnected} serverName={selectedServer?.name} />
+          )}
+
+          {activeTool === 'mic' && (
+            <MicrophoneView isConnected={isConnected} serverName={selectedServer?.name} />
           )}
         </div>
       )}
