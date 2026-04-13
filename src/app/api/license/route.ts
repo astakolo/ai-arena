@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { validateRequest, checkRateLimit } from '@/lib/api-auth'
 import { createLicenseSchema } from '@/lib/validators'
 import { v4 as uuidv4 } from 'uuid'
 
 export async function GET(request: NextRequest) {
-  const auth = validateApiKey(request)
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
 
   try {
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = validateApiKey(request)
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
 
   const rate = checkRateLimit(request)
@@ -58,5 +58,59 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(licenseKey, { status: 201 })
   } catch {
     return NextResponse.json({ error: 'Failed to create license key' }, { status: 500 })
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  const auth = await validateRequest(request)
+  if (!auth.valid) return auth.error!
+
+  try {
+    const body = await request.json()
+    const { id, isActive } = body
+
+    if (!id) {
+      return NextResponse.json({ error: 'License key ID is required' }, { status: 400 })
+    }
+
+    const licenseKey = await db.licenseKey.update({
+      where: { id },
+      data: { isActive: isActive !== undefined ? isActive : false },
+    })
+
+    return NextResponse.json(licenseKey)
+  } catch {
+    return NextResponse.json({ error: 'Failed to update license key' }, { status: 500 })
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const auth = await validateRequest(request)
+  if (!auth.valid) return auth.error!
+
+  const rate = checkRateLimit(request)
+  if (!rate.allowed) return rate.error!
+
+  try {
+    const body = await request.json()
+    const { id } = body
+
+    if (!id) {
+      return NextResponse.json({ error: 'License key ID is required' }, { status: 400 })
+    }
+
+    // Unlink from server first
+    const licenseKey = await db.licenseKey.findUnique({ where: { id } })
+    if (licenseKey?.serverId) {
+      await db.server.update({
+        where: { id: licenseKey.serverId },
+        data: { licenseKey: '' },
+      })
+    }
+
+    await db.licenseKey.delete({ where: { id } })
+    return NextResponse.json({ success: true })
+  } catch {
+    return NextResponse.json({ error: 'Failed to delete license key' }, { status: 500 })
   }
 }

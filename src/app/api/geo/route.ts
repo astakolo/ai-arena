@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { validateRequest, checkRateLimit } from '@/lib/api-auth'
 import { geoLookupSchema } from '@/lib/validators'
 
 export async function POST(request: NextRequest) {
-  const auth = validateApiKey(request)
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
 
   const rate = checkRateLimit(request)

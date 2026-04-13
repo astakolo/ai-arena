@@ -1,10 +1,18 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { validateApiKey } from '@/lib/api-auth'
+import { validateRequest } from '@/lib/api-auth'
 
-export async function POST() {
-  const auth = validateApiKey(new (await import('next/server')).NextRequest(new Request('http://localhost/api/seed', { method: 'POST' })))
+export async function POST(request: NextRequest) {
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
+
+  // Block seed in production
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json(
+      { error: 'Seed endpoint is disabled in production' },
+      { status: 403 }
+    )
+  }
 
   try {
     // Clear existing data for fresh seed

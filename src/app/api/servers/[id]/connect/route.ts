@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { validateRequest, checkRateLimit } from '@/lib/api-auth'
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = validateApiKey(request)
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
 
   const rate = checkRateLimit(request)

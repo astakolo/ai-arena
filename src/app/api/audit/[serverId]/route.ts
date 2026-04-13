@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { validateRequest } from '@/lib/api-auth'
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ serverId: string }> }
 ) {
+  // FIXED: Added authentication check (was missing before!)
+  const auth = await validateRequest(request)
+  if (!auth.valid) return auth.error!
+
   try {
     const { serverId } = await params
     const logs = await db.auditLog.findMany({

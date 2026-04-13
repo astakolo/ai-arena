@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { validateApiKey, checkRateLimit } from '@/lib/api-auth'
+import { validateRequest, checkRateLimit } from '@/lib/api-auth'
 import { createServerSchema } from '@/lib/validators'
 import { v4 as uuidv4 } from 'uuid'
 
 export async function GET(request: NextRequest) {
   // Auth check
-  const auth = validateApiKey(request)
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
 
   // Rate limit
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const auth = validateApiKey(request)
+  const auth = await validateRequest(request)
   if (!auth.valid) return auth.error!
 
   const rate = checkRateLimit(request)
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
     const apiBaseUrl = process.env.NEXT_PUBLIC_APP_URL || ''
     fetch(`${apiBaseUrl}/api/geo`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': process.env.AI_ARENA_API_KEY || '' },
+      headers: { 'Content-Type': 'application/json', 'Cookie': request.headers.get('cookie') || '' },
       body: JSON.stringify({ ip }),
     })
       .then((res) => res.json())
