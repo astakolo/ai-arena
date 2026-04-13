@@ -586,14 +586,9 @@ export default function Home() {
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [editServer, setEditServer] = useState<Server | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [firebaseConfig, setFirebaseConfig] = useState({
-    apiKey: '',
-    authDomain: '',
-    databaseURL: '',
-    projectId: '',
-    storageBucket: '',
-    messagingSenderId: '',
-    appId: '',
+  const [serverConfig, setServerConfig] = useState({
+    vpsUrl: typeof window !== 'undefined' ? localStorage.getItem('arena_vps_url') || '' : '',
+    encKey: typeof window !== 'undefined' ? localStorage.getItem('arena_enc_key') || '' : '',
   })
 
   // Check auth on mount — no more exposed API keys!
@@ -1021,54 +1016,78 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Firebase Config */}
+              {/* Server Configuration */}
               <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-5">
                 <div className="flex items-center gap-2 mb-4">
                   <Database className="w-4 h-4 text-emerald-400" />
-                  <h3 className="text-sm font-semibold text-white">Firebase Configuration</h3>
+                  <h3 className="text-sm font-semibold text-white">Server Configuration</h3>
                 </div>
                 <p className="text-xs text-zinc-400 mb-4">
-                  Configure your Firebase Realtime Database for real-time server communication and
-                  signaling.
+                  Configure the VPS URL and encryption key that agents use to connect. All agent communication
+                  is encrypted with AES-256-GCM over WebSocket. No third-party services involved.
                 </p>
 
-                <div className="bg-yellow-500/5 border border-yellow-500/20 rounded-lg p-3 mb-4">
+                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-4">
                   <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
-                    <p className="text-xs text-yellow-400/80">
-                      Configure your Firebase project to enable real-time features. Without Firebase,
-                      some real-time sync features will be unavailable.
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <p className="text-xs text-emerald-400/80">
+                      All communication is end-to-end encrypted. Your VPS is the only relay. No data is sent to any third-party service.
                     </p>
                   </div>
                 </div>
 
                 <div className="space-y-3">
-                  {[
-                    { key: 'apiKey', label: 'API Key', placeholder: 'AIzaSy...' },
-                    { key: 'authDomain', label: 'Auth Domain', placeholder: 'your-project.firebaseapp.com' },
-                    { key: 'databaseURL', label: 'Database URL', placeholder: 'https://your-project.firebaseio.com' },
-                    { key: 'projectId', label: 'Project ID', placeholder: 'your-project-id' },
-                    { key: 'storageBucket', label: 'Storage Bucket', placeholder: 'your-project.appspot.com' },
-                    { key: 'messagingSenderId', label: 'Messaging Sender ID', placeholder: '123456789' },
-                    { key: 'appId', label: 'App ID', placeholder: '1:123456789:web:abc123' },
-                  ].map((field) => (
-                    <div key={field.key} className="space-y-1.5">
-                      <Label className="text-xs text-zinc-400">{field.label}</Label>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-zinc-400">VPS Server URL</Label>
+                    <Input
+                      value={serverConfig.vpsUrl}
+                      onChange={(e) => setServerConfig({ ...serverConfig, vpsUrl: e.target.value })}
+                      placeholder="https://your-vps.com"
+                      className="bg-zinc-950 border-zinc-800 text-white font-mono text-xs"
+                    />
+                    <p className="text-[10px] text-zinc-600">The public URL of your Ai-Arena server (with HTTPS in production)</p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-zinc-400">Encryption Key (AES-256)</Label>
+                    <div className="flex gap-2">
                       <Input
-                        value={(firebaseConfig as Record<string, string>)[field.key]}
-                        onChange={(e) =>
-                          setFirebaseConfig({ ...firebaseConfig, [field.key]: e.target.value })
-                        }
-                        placeholder={field.placeholder}
-                        className="bg-zinc-950 border-zinc-800 text-white font-mono text-xs"
+                        value={serverConfig.encKey}
+                        onChange={(e) => setServerConfig({ ...serverConfig, encKey: e.target.value })}
+                        placeholder="64-char hex key..."
+                        type="password"
+                        className="bg-zinc-950 border-zinc-800 text-white font-mono text-xs flex-1"
                       />
+                      <Button
+                        variant="outline"
+                        onClick={async () => {
+                          try {
+                            const res = await fetch('/api/config/generate-key', { method: 'POST' })
+                            if (res.ok) {
+                              const { key } = await res.json()
+                              setServerConfig({ ...serverConfig, encKey: key })
+                              toast.success('New encryption key generated')
+                            }
+                          } catch {
+                            toast.error('Failed to generate key')
+                          }
+                        }}
+                        className="border-zinc-700 text-zinc-300 hover:text-white text-xs shrink-0"
+                      >
+                        Generate
+                      </Button>
                     </div>
-                  ))}
+                    <p className="text-[10px] text-zinc-600">64-char hex key (256-bit). Must match the server's ARENA_ENC_KEY.</p>
+                  </div>
                 </div>
 
                 <Button
                   className="mt-4 bg-emerald-600 hover:bg-emerald-700 text-white"
-                  onClick={() => toast.success('Firebase configuration saved to agent installer')}
+                  onClick={() => {
+                    localStorage.setItem('arena_vps_url', serverConfig.vpsUrl)
+                    localStorage.setItem('arena_enc_key', serverConfig.encKey)
+                    toast.success('Server configuration saved')
+                  }}
                 >
                   <Save className="w-4 h-4 mr-1.5" />
                   Save Configuration

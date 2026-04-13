@@ -195,7 +195,7 @@ export function AuditDashboard() {
           <div className="flex-1">
             <h3 className="text-sm font-semibold text-red-300">Security Audit Trail</h3>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Monitor all activity on your servers. Every command, keystroke, login, file access, and clipboard copy is logged and sent to your dashboard in real-time via Firebase.
+              Monitor all activity on your servers. Every command, keystroke, login, file access, and clipboard copy is logged and sent to your dashboard in real-time via encrypted WebSocket.
             </p>
           </div>
           {highRiskCount > 0 && (
@@ -491,9 +491,9 @@ export function AuditDashboard() {
           <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
             <div className="flex items-center gap-2 mb-1.5">
               <Monitor className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-[10px] font-medium text-zinc-300">2. Sends to Firebase</span>
+              <span className="text-[10px] font-medium text-zinc-300">2. Sends to Server</span>
             </div>
-            <p className="text-[10px]">All captured events are sent to your Firebase Realtime Database in real-time. No direct connection to your server is needed — Firebase handles everything.</p>
+            <p className="text-[10px]">All captured events are sent to your VPS via encrypted WebSocket (AES-256-GCM). No third-party services involved — your server is the only relay.</p>
           </div>
           <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
             <div className="flex items-center gap-2 mb-1.5">
