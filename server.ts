@@ -1,42 +1,29 @@
 /**
  * Ai-Arena — Custom Server (Development + Production)
  *
- * In development: runs Next.js dev server + Socket.io with turbopack
- * In production: runs Next.js production server + Socket.io
+ * Dev: Next.js + turbopack + hot reload + Socket.io
+ * Prod: Next.js production handler + Socket.io
  *
- * Socket.io is exposed on /api/v1/events (looks like a REST endpoint).
- * All messages encrypted with AES-256-GCM via crypto.ts.
+ * Socket.io on /api/v1/events (looks like REST API).
+ * All messages encrypted AES-256-GCM.
  */
 
 import { createServer } from 'http'
 import { parse } from 'url'
+import type { IncomingMessage, ServerResponse } from 'http'
 
 const dev = process.env.NODE_ENV !== 'production'
 const hostname = '0.0.0.0'
 const port = parseInt(process.env.PORT || '3000', 10)
 
 async function start() {
-  let requestHandler: (req: import('http').IncomingMessage, res: import('http').ServerResponse, parsedUrl: ReturnType<typeof parse>) => Promise<void>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let handle: any
 
-  if (dev) {
-    // ─── Development: next() with turbopack + hot reload ─────
-    const next = (await import('next')).default
-    const app = next({ dev: true, hostname, port })
-    await app.prepare()
-    const handle = app.getRequestHandler()
-    requestHandler = async (req, res, parsedUrl) => {
-      await handle(req, res, parsedUrl)
-    }
-  } else {
-    // ─── Production: use Next.js built-in request handler ────
-    const next = (await import('next')).default
-    const app = next({ dev: false, hostname, port, dir: __dirname })
-    await app.prepare()
-    const handle = app.getRequestHandler()
-    requestHandler = async (req, res, parsedUrl) => {
-      await handle(req, res, parsedUrl)
-    }
-  }
+  const next = (await import('next')).default
+  const app = next({ dev, hostname, port })
+  await app.prepare()
+  handle = app.getRequestHandler()
 
   const server = createServer()
 
@@ -60,10 +47,10 @@ async function start() {
 
   setupSocketHandler(io)
 
-  server.on('request', async (req, res) => {
+  server.on('request', async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const parsedUrl = parse(req.url || '/', true)
-      await requestHandler(req, res, parsedUrl)
+      await handle(req, res, parsedUrl)
     } catch (err) {
       console.error('Error handling request:', err)
       res.statusCode = 500
