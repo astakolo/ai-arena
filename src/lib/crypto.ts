@@ -54,10 +54,11 @@ function getEncryptionKey(): Buffer {
 }
 
 export interface EncryptedPayload {
-  v: 1            // protocol version
+  v: 1 | 2        // protocol version
   iv: string       // hex encoded IV
   data: string     // base64 encoded ciphertext+tag
   p: number        // padding length (for traffic obfuscation)
+  ts?: number      // timestamp (v2+)
 }
 
 export function encrypt(message: unknown): string {

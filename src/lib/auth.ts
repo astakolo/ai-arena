@@ -1,14 +1,12 @@
-import { getIronSession, IronSession } from 'iron-session'
+import { getIronSession } from 'iron-session'
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 
-declare module 'iron-session' {
-  interface IronSessionData {
-    userId?: string
-    username?: string
-    role?: string
-    isLoggedIn?: boolean
-  }
+interface SessionData {
+  userId?: string
+  username?: string
+  role?: string
+  isLoggedIn?: boolean
 }
 
 const sessionOptions = {
@@ -27,16 +25,16 @@ const sessionOptions = {
  * Get the current session from cookies.
  * Works in both Route Handlers and Server Components.
  */
-export async function getSession(): Promise<IronSession<IronSessionData>> {
+export async function getSession() {
   const cookieStore = await cookies()
-  return getIronSession(cookieStore, sessionOptions)
+  return getIronSession<SessionData>(cookieStore, sessionOptions)
 }
 
 /**
- * Check if the current user is authenticated.
+ * Check if the user is authenticated.
  * Returns the session if valid, null otherwise.
  */
-export async function requireAuth(): Promise<IronSession<IronSessionData> | null> {
+export async function requireAuth() {
   const session = await getSession()
   if (!session.isLoggedIn || !session.userId) {
     return null

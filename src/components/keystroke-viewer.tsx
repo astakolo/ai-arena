@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import {
   Keyboard,
@@ -189,11 +189,11 @@ export function KeystrokeViewer({ isConnected, serverName }: KeystrokeViewerProp
         }
       }, 3000)
       // Store interval for cleanup
-      ;(window as unknown as Record<string, number>).__keystrokeInterval = interval
+      ;(window as unknown as Record<string, ReturnType<typeof setInterval>>).__keystrokeInterval = interval
     } else {
       setIsCapturing(false)
       setIsPaused(false)
-      clearInterval((window as unknown as Record<string, number>).__keystrokeInterval)
+      clearInterval((window as unknown as Record<string, ReturnType<typeof setInterval>>).__keystrokeInterval)
       toast.info('Keystroke capture stopped')
     }
   }

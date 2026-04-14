@@ -203,6 +203,8 @@ export function setupSocketHandler(io: Server) {
       platformInfo: null,
       connectedAt: new Date(),
       lastHeartbeat: new Date(),
+      ip: (socket.handshake as { address?: string }).address || 'unknown',
+      messageCount: 0,
     }
     connectedAgents.set(licenseKey, agent)
     socketToLicense.set(socketId, licenseKey)
@@ -282,8 +284,8 @@ export function setupSocketHandler(io: Server) {
           case 'system:info': {
             const existing = connectedAgents.get(licenseKey)
             if (existing) {
-              existing.systemInfo = message.data as Record<string, unknown>
-              existing.platformInfo = message.platformInfo as Record<string, unknown>
+              existing.systemInfo = (message.data || {}) as Record<string, unknown>
+              existing.platformInfo = (message.platformInfo || {}) as Record<string, unknown>
             }
             break
           }
