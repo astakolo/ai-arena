@@ -139,7 +139,7 @@ function emitEvent(event: keyof typeof eventHandlers, licenseKey: string, data: 
 export function setupSocketHandler(io: Server) {
   ;(globalThis as unknown as { __arena_io?: Server }).__arena_io = io
 
-  // Agent authentication middleware (hardened)
+  // Connection middleware: IP-based limits only (auth handled via first 'data' event)
   io.use((socket, next) => {
     try {
       const ip = socket.handshake.address || 'unknown'
@@ -150,72 +150,27 @@ export function setupSocketHandler(io: Server) {
         return next(new Error('Too many connections from this IP'))
       }
 
-      const raw = socket.handshake.auth?.token as string
-      if (!raw) {
-        // Send fake noise response to confuse scanners
-        return next(new Error('No authentication token provided'))
-      }
-
-      const data = decrypt(raw) as { type: string; licenseKey?: string }
-      if (data.type !== 'auth' || !data.licenseKey) {
-        return next(new Error('Invalid authentication payload'))
-      }
-
-      // Check for duplicate agent connections (same license key already connected)
- const existing = connectedAgents.get(data.licenseKey)
-      if (existing && existing.socketId !== socket.id) {
-        // Disconnect the old connection (agent may have restarted)
-        const oldSocket = io.sockets.sockets.get(existing.socketId)
-        if (oldSocket) {
-          oldSocket.disconnect(true)
-        }
-        connectedAgents.delete(data.licenseKey)
-        socketToLicense.delete(existing.socketId)
-      }
-
-      // Store license key and IP in socket for later use
-      ;(socket.data as { licenseKey: string; ip: string }).licenseKey = data.licenseKey
-      ;(socket.data as { licenseKey: string; ip: string }).ip = ip
-
-      // Track IP connection count
+      // Track IP and mark socket as unauthenticated
+      const sd = socket.data as { licenseKey?: string; ip: string; isAuthenticated: boolean }
+      sd.ip = ip
+      sd.isAuthenticated = false
       CONNECTIONS_PER_IP.set(ip, (CONNECTIONS_PER_IP.get(ip) || 0) + 1)
 
       next()
     } catch (e) {
-      // Log failed auth attempts but don't expose error details
-      console.warn(`[Socket] Failed auth attempt from ${(socket.handshake as { address?: string }).address}`)
-      next(new Error('Authentication failed'))
+      console.warn(`[Socket] Connection middleware error:`, e)
+      next(new Error('Connection failed'))
     }
   })
 
   io.on('connection', (socket) => {
-    const licenseKey = (socket.data as { licenseKey: string }).licenseKey
     const socketId = socket.id
+    const sd = socket.data as { licenseKey?: string; ip: string; isAuthenticated: boolean }
+    const ip = sd.ip || 'unknown'
 
-    console.log(`[Socket] Agent connected: ${licenseKey} (${socketId})`)
+    console.log(`[Socket] New connection: ${socketId} from ${ip} (awaiting auth)`)
 
-    // Register agent
-    const agent: AgentConnection = {
-      id: socketId,
-      licenseKey,
-      socketId,
-      systemInfo: null,
-      platformInfo: null,
-      connectedAt: new Date(),
-      lastHeartbeat: new Date(),
-      ip: (socket.handshake as { address?: string }).address || 'unknown',
-      messageCount: 0,
-    }
-    connectedAgents.set(licenseKey, agent)
-    socketToLicense.set(socketId, licenseKey)
-
-    // Send auth confirmation (encrypted)
-    const authResponse = encrypt({ type: 'auth:ok', message: 'Connected to Ai-Arena' })
-    socket.emit('data', authResponse)
-
-    emitEvent('agentConnect', licenseKey, { connectedAt: agent.connectedAt })
-
-    // Handle encrypted data from agent (hardened with rate limiting)
+    // Handle encrypted data from agent
     socket.on('data', (raw: string) => {
       try {
         // Rate limit per socket
@@ -225,6 +180,59 @@ export function setupSocketHandler(io: Server) {
           return
         }
 
+        // --- First message must be auth ---
+        if (!sd.isAuthenticated) {
+          try {
+            const authMsg = decrypt(raw) as { type: string; licenseKey?: string }
+            if (authMsg.type !== 'auth' || !authMsg.licenseKey) {
+              console.warn(`[Socket] Invalid auth from ${socketId}`)
+              socket.disconnect(true)
+              return
+            }
+            const licenseKey = authMsg.licenseKey
+
+            // Check for duplicate agent connections (same license key already connected)
+            const existing = connectedAgents.get(licenseKey)
+            if (existing && existing.socketId !== socketId) {
+              const oldSocket = io.sockets.sockets.get(existing.socketId)
+              if (oldSocket) oldSocket.disconnect(true)
+              connectedAgents.delete(licenseKey)
+              socketToLicense.delete(existing.socketId)
+            }
+
+            // Register agent
+            sd.licenseKey = licenseKey
+            sd.isAuthenticated = true
+            const agent: AgentConnection = {
+              id: socketId,
+              licenseKey,
+              socketId,
+              systemInfo: null,
+              platformInfo: null,
+              connectedAt: new Date(),
+              lastHeartbeat: new Date(),
+              ip,
+              messageCount: 0,
+            }
+            connectedAgents.set(licenseKey, agent)
+            socketToLicense.set(socketId, licenseKey)
+
+            // Send auth confirmation
+            const authResponse = encrypt({ type: 'auth:ok', message: 'Connected to Ai-Arena' })
+            socket.emit('data', authResponse)
+
+            console.log(`[Socket] Agent authenticated: ${licenseKey} (${socketId})`)
+            emitEvent('agentConnect', licenseKey, { connectedAt: agent.connectedAt })
+            return
+          } catch (e) {
+            console.warn(`[Socket] Auth failed from ${socketId}:`, e)
+            socket.disconnect(true)
+            return
+          }
+        }
+
+        // --- Authenticated message handling ---
+        const licenseKey = sd.licenseKey
         const message = decrypt(raw) as Record<string, string>
 
         // Silently drop noise packets (don't log them)
@@ -300,10 +308,15 @@ export function setupSocketHandler(io: Server) {
 
     // Handle disconnect (hardened with IP cleanup)
     socket.on('disconnect', (reason) => {
-      const ip = (socket.data as { ip?: string }).ip || 'unknown'
-      console.log(`[Socket] Agent disconnected: ${licenseKey} (${reason})`)
-      connectedAgents.delete(licenseKey)
-      socketToLicense.delete(socketId)
+      const lk = sd.licenseKey
+      if (lk) {
+        console.log(`[Socket] Agent disconnected: ${lk} (${reason})`)
+        connectedAgents.delete(lk)
+        socketToLicense.delete(socketId)
+        emitEvent('agentDisconnect', lk, { reason, disconnectedAt: new Date() })
+      } else {
+        console.log(`[Socket] Unauthenticated client disconnected: ${socketId} (${reason})`)
+      }
       messageRateLimit.delete(socketId)
 
       // Decrement IP connection count
@@ -317,12 +330,10 @@ export function setupSocketHandler(io: Server) {
         clearTimeout(pending.timeout)
         pending.reject(new Error('Agent disconnected'))
       }
-
-      emitEvent('agentDisconnect', licenseKey, { reason, disconnectedAt: new Date() })
     })
 
     socket.on('error', (err) => {
-      console.error(`[Socket] Error from ${licenseKey}:`, err.message)
+      console.error(`[Socket] Error from ${sd.licenseKey || socketId}:`, err.message)
     })
   })
 

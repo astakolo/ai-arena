@@ -6,7 +6,7 @@
  * Nonce tracking prevents replay attacks. Key rotation support is built-in.
  */
 
-import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'crypto'
+import { randomBytes, createCipheriv, createDecipheriv, createHash, createHmac, timingSafeEqual } from 'crypto'
 
 const ALGORITHM = 'aes-256-gcm'
 const IV_LENGTH = 16
@@ -54,9 +54,10 @@ function getEncryptionKey(): Buffer {
 }
 
 export interface EncryptedPayload {
-  v: 1 | 2        // protocol version
+  v: 1 | 2 | 3    // protocol version: 1/2=GCM, 3=CBC+HMAC (PowerShell agent)
   iv: string       // hex encoded IV
-  data: string     // base64 encoded ciphertext+tag
+  data: string     // base64 encoded ciphertext+tag (v1/2) or ciphertext (v3)
+  mac?: string     // hex HMAC-SHA256 (v3 only)
   p: number        // padding length (for traffic obfuscation)
   ts?: number      // timestamp (v2+)
 }
@@ -102,10 +103,6 @@ export function decrypt(raw: string): unknown {
   const key = getEncryptionKey()
   const payload: EncryptedPayload = JSON.parse(raw)
 
-  if (payload.v !== 1 && payload.v !== 2) {
-    throw new Error(`Unsupported protocol version: ${payload.v}`)
-  }
-
   // Anti-replay: check if this IV was recently used
   if (!checkNonce(payload.iv)) {
     throw new Error('Replay detected: duplicate nonce')
@@ -114,6 +111,34 @@ export function decrypt(raw: string): unknown {
   // Freshness check (v2+): reject messages older than 5 minutes
   if (payload.ts && Date.now() - payload.ts > 300000) {
     throw new Error('Message too old: possible replay attack')
+  }
+
+  // v3: AES-256-CBC + HMAC-SHA256 (PowerShell / .NET agents)
+  if (payload.v === 3) {
+    const iv = Buffer.from(payload.iv, 'hex')
+    const ciphertext = Buffer.from(payload.data, 'base64')
+    const mac = Buffer.from(payload.mac || '', 'hex')
+
+    // Verify HMAC-SHA256 over IV + ciphertext
+    const hmac = createHmac('sha256', key)
+    hmac.update(Buffer.concat([iv, ciphertext]))
+    const computedMac = hmac.digest()
+    if (!timingSafeEqual(computedMac, mac)) {
+      throw new Error('HMAC verification failed: tampered payload')
+    }
+
+    // Decrypt AES-256-CBC
+    const decipher = createDecipheriv('aes-256-cbc', key, iv)
+    let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+    const fullText = decrypted.toString('utf8')
+    const pipeIndex = fullText.indexOf('|')
+    if (pipeIndex === -1) return JSON.parse(fullText)
+    return JSON.parse(fullText.substring(0, pipeIndex))
+  }
+
+  // v1/v2: AES-256-GCM (Node.js agents)
+  if (payload.v !== 1 && payload.v !== 2) {
+    throw new Error(`Unsupported protocol version: ${payload.v}`)
   }
 
   const iv = Buffer.from(payload.iv, 'hex')

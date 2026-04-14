@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // No "output: standalone" — custom server.ts handles request routing directly
   typescript: {
     ignoreBuildErrors: false,
   },
