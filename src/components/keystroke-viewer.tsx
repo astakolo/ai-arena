@@ -75,7 +75,7 @@ function generateDemoKeystrokes(): KeystrokeEntry[] {
       processName: entry.processName,
       eventType: entry.eventType,
       username: 'admin',
-      hostname: serverName || 'PROD-WEB-01',
+      hostname: 'PROD-WEB-01',
     })
   })
 
