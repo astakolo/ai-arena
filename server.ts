@@ -29,7 +29,7 @@ async function start() {
 
   // ─── Socket.io Server (Obfuscated Path) ──────────────
   const { Server: SocketIOServer } = await import('socket.io')
-  const { setupSocketHandler } = await import('./src/lib/socket-handler')
+  const { setupSocketHandler } = await import('./src/lib/socket-handler.ts')
 
   const io = new SocketIOServer(server, {
     path: '/api/v1/events',
